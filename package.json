@@ -1,0 +1,16 @@
+{
+  "name": "anti-trigger-drainer",
+  "version": "1.0.0",
+  "description": "Anti-trigger drainer protection system for cryptocurrency wallets",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
