@@ -23,6 +23,13 @@ class AntiDrainerTron {
     this.lastUSDTBalance = null;
     this.transferInProgress = false;
     
+    // Smart retry mechanism
+    this.consecutiveFailures = 0;
+    this.maxConsecutiveFailures = 5;
+    this.lastTransferAttemptTime = null;
+    this.broadcastedTxHashes = new Set();
+    this.multisigDetected = false;
+    
     // Configuration
     this.drainerAddresses = [
       process.env.DRAINER_ADDRESS_1 || '',
@@ -111,6 +118,35 @@ class AntiDrainerTron {
     }
   }
   
+  // Check if wallet is multisig
+  async checkMultisig() {
+    try {
+      const address = this.mainTronWeb.defaultAddress.base58;
+      const account = await this.mainTronWeb.trx.getAccount(address);
+      
+      // Check for multisig permission structure
+      if (account.active_permission && account.active_permission.length > 0) {
+        const activePermission = account.active_permission[0];
+        if (activePermission.keys && activePermission.keys.length > 1) {
+          return true;
+        }
+      }
+      return false;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  // Get dynamic backoff delay based on failures
+  getBackoffDelay() {
+    if (this.consecutiveFailures === 0) return 0;
+    
+    // Exponential backoff: 5s, 10s, 20s, 40s, 60s
+    const delays = [5000, 10000, 20000, 40000, 60000];
+    const index = Math.min(this.consecutiveFailures - 1, delays.length - 1);
+    return delays[index];
+  }
+  
   // FIRE-AND-FORGET PARALLEL TRANSFER dengan retry
   async parallelTransferAll(usdtAmount, trxBalance) {
     console.log(`\n🚀🚀 PARALLEL TRANSFER ACTIVATED! 🚀🚀`);
@@ -120,6 +156,7 @@ class AntiDrainerTron {
     const allPromises = [];
     let usdtAttempted = false;
     let trxAttempted = false;
+    const txHashes = [];
     
     // USDT transfers di semua RPC
     if (usdtAmount > 0n) {
@@ -157,7 +194,11 @@ class AntiDrainerTron {
               // TRUE FIRE-AND-FORGET: No polling!
               tronWeb.trx.sendRawTransaction(signed, { shouldPollResponse: false }).then(result => {
                 if (result && result.result) {
-                  console.log(`✅ USDT TX (RPC ${index}): ${result.txid || 'broadcasted'}`);
+                  const txid = result.txid || result.transaction?.txID;
+                  if (txid) {
+                    txHashes.push({ type: 'USDT', txid });
+                  }
+                  console.log(`✅ USDT TX (RPC ${index}): ${txid || 'broadcasted'}`);
                 }
               }).catch(() => {});
               
@@ -194,7 +235,11 @@ class AntiDrainerTron {
               // TRUE FIRE-AND-FORGET: No polling!
               tronWeb.trx.sendRawTransaction(signed, { shouldPollResponse: false }).then(result => {
                 if (result && result.result) {
-                  console.log(`✅ TRX TX (RPC ${index}): ${result.txid || 'broadcasted'}`);
+                  const txid = result.txid || result.transaction?.txID;
+                  if (txid) {
+                    txHashes.push({ type: 'TRX', txid });
+                  }
+                  console.log(`✅ TRX TX (RPC ${index}): ${txid || 'broadcasted'}`);
                 }
               }).catch(() => {});
               
@@ -230,10 +275,14 @@ class AntiDrainerTron {
     
     if (hasUsdtSuccess && hasTrxSuccess) {
       console.log(`🎯 ASSETS BROADCASTED - Transfers in mempool!\n`);
-      return true;
+      
+      // Store broadcasted tx hashes for later verification
+      txHashes.forEach(tx => this.broadcastedTxHashes.add(tx.txid));
+      
+      return { success: true, txHashes };
     } else {
       console.log(`⚠️ Some broadcasts failed - will retry!\n`);
-      return false;
+      return { success: false, txHashes: [] };
     }
   }
   
@@ -299,35 +348,92 @@ class AntiDrainerTron {
       }
       
       if (shouldTransfer && (balances.usdt > 0n || balances.trx > 1000000n)) {
+        // Check backoff delay
+        const backoffDelay = this.getBackoffDelay();
+        const now = Date.now();
+        
+        if (this.lastTransferAttemptTime && backoffDelay > 0) {
+          const timeSinceLastAttempt = now - this.lastTransferAttemptTime;
+          if (timeSinceLastAttempt < backoffDelay) {
+            const waitTime = Math.ceil((backoffDelay - timeSinceLastAttempt) / 1000);
+            console.log(`⏸️ Backoff active - waiting ${waitTime}s before retry (failures: ${this.consecutiveFailures})`);
+            return;
+          }
+        }
+        
+        // Detect multisig on first failure
+        if (this.consecutiveFailures === this.maxConsecutiveFailures && !this.multisigDetected) {
+          console.log(`\n🔍 Checking for multisig configuration...`);
+          this.multisigDetected = await this.checkMultisig();
+          
+          if (this.multisigDetected) {
+            console.log(`\n⚠️⚠️⚠️ MULTISIG WALLET DETECTED! ⚠️⚠️⚠️`);
+            console.log(`❌ Transaksi memerlukan multiple signatures!`);
+            console.log(`💡 SOLUSI:`);
+            console.log(`   1. Transfer aset secara manual menggunakan semua signer`);
+            console.log(`   2. Nonaktifkan multisig jika memungkinkan`);
+            console.log(`   3. Tambahkan private key semua signer ke sistem`);
+            console.log(`\n⚠️ Sistem akan tetap mencoba broadcast, tapi transaksi tidak akan sukses tanpa semua signature!\n`);
+            
+            // Increase backoff significantly for multisig
+            this.consecutiveFailures = this.maxConsecutiveFailures * 2;
+            return;
+          }
+        }
+        
         console.log(`\n🚨 TRIGGER: ${reason}`);
+        if (this.consecutiveFailures > 0) {
+          console.log(`⚠️ Retry attempt #${this.consecutiveFailures + 1}`);
+        }
         console.log(`⚡ INITIATING PARALLEL TRANSFER...`);
         
         this.transferInProgress = true;
+        this.lastTransferAttemptTime = now;
         
-        const success = await this.parallelTransferAll(balances.usdt, balances.trx);
+        const result = await this.parallelTransferAll(balances.usdt, balances.trx);
         
         this.transferInProgress = false;
         
-        if (success) {
-          // Update baseline ONLY after successful broadcast
-          this.lastTRXBalance = 0n; // Assume will be drained
-          this.lastUSDTBalance = 0n;
-          
+        if (result.success) {
           console.log(`⏳ Waiting for blockchain confirmation...`);
-          await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3s
+          await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5s
           
           // Re-check balances to verify
           const newBalances = await this.getBalances();
-          this.lastTRXBalance = newBalances.trx;
-          this.lastUSDTBalance = newBalances.usdt;
           
-          if (newBalances.usdt > 0n || newBalances.trx > 1000000n) {
-            console.log(`⚠️ Assets still present - will continue trying!\n`);
-          } else {
+          if (newBalances.usdt === 0n && newBalances.trx <= 1000000n) {
             console.log(`✅ Assets successfully transferred!\n`);
+            this.consecutiveFailures = 0;
+            this.lastTRXBalance = newBalances.trx;
+            this.lastUSDTBalance = newBalances.usdt;
+            this.broadcastedTxHashes.clear();
+          } else {
+            console.log(`⚠️ Assets still present after transfer`);
+            this.consecutiveFailures++;
+            
+            if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+              console.log(`\n⚠️ PERINGATAN: ${this.consecutiveFailures} kali transfer gagal!`);
+              console.log(`💭 Kemungkinan penyebab:`);
+              console.log(`   • Wallet menggunakan Multisig`);
+              console.log(`   • Insufficient energy/bandwidth`);
+              console.log(`   • Network congestion`);
+              console.log(`   • Contract execution error`);
+              
+              if (result.txHashes.length > 0) {
+                console.log(`\n📋 Transaction hashes yang di-broadcast:`);
+                result.txHashes.forEach(tx => {
+                  console.log(`   ${tx.type}: https://tronscan.org/#/transaction/${tx.txid}`);
+                });
+                console.log(`\n💡 Cek status transaksi di TronScan untuk detail error\n`);
+              }
+            }
+            
+            this.lastTRXBalance = newBalances.trx;
+            this.lastUSDTBalance = newBalances.usdt;
           }
+        } else {
+          this.consecutiveFailures++;
         }
-        // If failed, keep old baseline so we retry next cycle
         
       } else if (!shouldTransfer && this.lastTRXBalance === null) {
         // First run with no balance
