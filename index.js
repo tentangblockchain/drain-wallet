@@ -1,4 +1,4 @@
-// anti-drainer-tron.js - TRON WALLET PROTECTION
+// anti-drainer-tron.js - MAXIMUM SPEED PROTECTION
 const TronWeb = require('tronweb');
 require('dotenv').config();
 
@@ -6,40 +6,11 @@ require('dotenv').config();
 const RPC_ENDPOINTS = process.env.RPC_ENDPOINTS ? 
   process.env.RPC_ENDPOINTS.split(',') : [
     'https://api.trongrid.io',
-    'https://api.tronstack.io',
-    'https://api.shasta.trongrid.io'
+    'https://api.tronstack.io'
   ];
 
 // USDT Contract Address (TRC20) - Default USDT di mainnet
 const USDT_CONTRACT = process.env.USDT_CONTRACT_ADDRESS || 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
-
-// TRC20 ABI untuk USDT
-const TRC20_ABI = [
-  {
-    "constant": true,
-    "inputs": [{"name": "who", "type": "address"}],
-    "name": "balanceOf",
-    "outputs": [{"name": "", "type": "uint256"}],
-    "type": "function"
-  },
-  {
-    "constant": false,
-    "inputs": [
-      {"name": "to", "type": "address"},
-      {"name": "value", "type": "uint256"}
-    ],
-    "name": "transfer",
-    "outputs": [{"name": "", "type": "bool"}],
-    "type": "function"
-  },
-  {
-    "constant": true,
-    "inputs": [],
-    "name": "decimals",
-    "outputs": [{"name": "", "type": "uint8"}],
-    "type": "function"
-  }
-];
 
 class AntiDrainerTron {
   constructor() {
@@ -48,13 +19,10 @@ class AntiDrainerTron {
     this.mainTronWeb = null;
     
     this.destinationWallet = process.env.DESTINATION_WALLET;
-    this.usdtContracts = [];
     
-    // Tracking untuk deteksi trigger
-    this.lastTRXBalance = 0n;
-    this.lastUSDTBalance = 0n;
-    this.triggerDetected = false;
-    this.isEmergencyMode = false;
+    // Tracking untuk deteksi ANY TRX increase
+    this.lastTRXBalance = null;
+    this.lastUSDTBalance = null;
     this.lastBlockNumber = 0;
     
     // Alamat drainer yang terdeteksi
@@ -68,10 +36,9 @@ class AntiDrainerTron {
     
     // Threshold untuk deteksi trigger (dalam SUN, 1 TRX = 1,000,000 SUN)
     this.triggerThreshold = BigInt(parseFloat(process.env.TRIGGER_THRESHOLD_TRX || '0.1') * 1000000);
-    this.exactTriggerAmount = BigInt(parseFloat(process.env.EXACT_TRIGGER_AMOUNT_TRX || '0.05') * 1000000);
     
-    // Fee limits (dalam SUN)
-    this.normalFeeLimit = parseInt(process.env.NORMAL_FEE_LIMIT) || 10000000; // 10 TRX
+    // Fee limits (dalam SUN) - REDUCED untuk energy=0
+    this.normalFeeLimit = parseInt(process.env.NORMAL_FEE_LIMIT) || 15000000; // 15 TRX
     this.emergencyFeeLimit = parseInt(process.env.EMERGENCY_FEE_LIMIT) || 50000000; // 50 TRX
     
     console.log('🔗 Testing TRON RPC connections...');
@@ -97,15 +64,6 @@ class AntiDrainerTron {
         this.validRpcIndexes.push(i);
         console.log(`✅ RPC ${i} connected: ${RPC_ENDPOINTS[i]}`);
         
-        // Setup USDT contract
-        try {
-          const usdtContract = await tronWeb.contract(TRC20_ABI, USDT_CONTRACT);
-          this.usdtContracts.push(usdtContract);
-        } catch (err) {
-          console.log(`⚠️ Warning: USDT contract setup failed for RPC ${i}`);
-          this.usdtContracts.push(null);
-        }
-        
       } catch (error) {
         console.log(`❌ RPC ${i} failed: ${RPC_ENDPOINTS[i]}`);
       }
@@ -122,7 +80,7 @@ class AntiDrainerTron {
     
     console.log(`🔑 Wallet: ${address}`);
     console.log(`📍 Tujuan: ${this.destinationWallet}`);
-    console.log(`⚠️ Trigger Detection: ${this.triggerThreshold / 1000000n} TRX\n`);
+    console.log(`⚠️ Auto-transfer: IMMEDIATE saat TRX masuk!\n`);
   }
   
   // Konversi SUN ke TRX untuk display
@@ -130,138 +88,109 @@ class AntiDrainerTron {
     return Number(sun) / 1000000;
   }
   
-  // Monitor transaksi masuk dengan whitelist detection
-  async checkForDrainerTransactions() {
+  // Get USDT balance dengan multiple methods untuk reliability
+  async getUSDTBalance(tronWeb) {
     try {
-      const currentBlock = await this.mainTronWeb.trx.getCurrentBlock();
-      const currentBlockNumber = currentBlock.block_header.raw_data.number;
+      const address = tronWeb.defaultAddress.base58;
       
-      if (this.lastBlockNumber === 0) {
-        this.lastBlockNumber = currentBlockNumber;
-        return false;
+      // Method 1: TriggerConstantContract (paling reliable)
+      try {
+        const parameter = [{type: 'address', value: address}];
+        const options = {};
+        
+        const transaction = await tronWeb.transactionBuilder.triggerConstantContract(
+          USDT_CONTRACT,
+          'balanceOf(address)',
+          options,
+          parameter,
+          address
+        );
+        
+        if (transaction && transaction.constant_result && transaction.constant_result[0]) {
+          const balanceHex = transaction.constant_result[0];
+          return BigInt('0x' + balanceHex);
+        }
+      } catch (e) {
+        // Try next method
       }
       
-      const myAddress = this.mainTronWeb.defaultAddress.base58;
-      
-      // Cek transaksi ke wallet kita di block terakhir
+      // Method 2: Direct contract call
       try {
-        const transactions = await this.mainTronWeb.trx.getTransactionsRelated(myAddress, 'to', 10);
-        
-        if (transactions && transactions.length > 0) {
-          for (const tx of transactions) {
-            if (!tx.raw_data || !tx.raw_data.contract) continue;
-            
-            const contract = tx.raw_data.contract[0];
-            if (contract.type === 'TransferContract') {
-              const value = BigInt(contract.parameter.value.amount || 0);
-              const fromAddress = this.mainTronWeb.address.fromHex(contract.parameter.value.owner_address);
-              
-              // WHITELIST: Skip jika dari official sender
-              if (this.officialSender && fromAddress === this.officialSender) {
-                console.log(`✅ Legitimate transaction from official sender: ${this.sunToTrx(value)} TRX`);
-                continue;
-              }
-              
-              // TRIGGER DETECTION: TRX kecil dari alamat tidak dikenal
-              if (value > 0n && value <= this.triggerThreshold) {
-                console.log(`🚨🚨 TRIGGER DETECTED! 🚨🚨`);
-                console.log(`📍 From: ${fromAddress} (UNKNOWN SENDER)`);
-                console.log(`💰 Amount: ${this.sunToTrx(value)} TRX`);
-                console.log(`🎯 TX: ${tx.txID}`);
-                console.log(`⚠️ DRAINER SIGNAL - EMERGENCY MODE ACTIVATED!`);
-                
-                this.triggerDetected = true;
-                this.isEmergencyMode = true;
-                this.lastBlockNumber = currentBlockNumber;
-                return true;
-              }
-              
-              // KNOWN DRAINER: Alamat drainer yang sudah terdeteksi
-              if (this.drainerAddresses.some(addr => addr === fromAddress)) {
-                console.log(`🚨🚨 KNOWN DRAINER DETECTED! 🚨🚨`);
-                console.log(`📍 From: ${fromAddress}`);
-                console.log(`💰 Amount: ${this.sunToTrx(value)} TRX`);
-                console.log(`🎯 TX: ${tx.txID}`);
-                console.log(`⚠️ EMERGENCY MODE ACTIVATED!`);
-                
-                this.triggerDetected = true;
-                this.isEmergencyMode = true;
-                this.lastBlockNumber = currentBlockNumber;
-                return true;
-              }
-            }
+        const contract = await tronWeb.contract().at(USDT_CONTRACT);
+        const balance = await contract.balanceOf(address).call();
+        return BigInt(balance.toString());
+      } catch (e) {
+        // Try next method
+      }
+      
+      // Method 3: TronGrid API
+      try {
+        const response = await fetch(`https://api.trongrid.io/v1/contracts/${USDT_CONTRACT}/balance?address=${address}`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data && data.balance !== undefined) {
+            return BigInt(data.balance);
           }
         }
-      } catch (txError) {
-        // Skip jika error getting transactions
+      } catch (e) {
+        // All methods failed
       }
       
-      this.lastBlockNumber = currentBlockNumber;
-      return false;
+      return 0n;
       
     } catch (error) {
-      return false;
+      console.log(`⚠️ Error getting USDT balance: ${error.message}`);
+      return 0n;
     }
   }
   
-  // Deteksi trigger berdasarkan perubahan balance (fallback method)
-  detectTrigger(currentTRX, currentUSDT) {
-    const trxIncrease = currentTRX - this.lastTRXBalance;
-    
-    // Trigger terdeteksi jika ada penambahan TRX kecil dan masih ada USDT
-    if (trxIncrease > 0n && 
-        trxIncrease <= this.triggerThreshold && 
-        currentUSDT > 0n) {
-      
-      if (trxIncrease === this.exactTriggerAmount) {
-        console.log(`🚨🚨 EXACT DRAINER TRIGGER DETECTED! 🚨🚨`);
-        console.log(`💰 Amount: ${this.sunToTrx(trxIncrease)} TRX (EXACT ${this.sunToTrx(this.exactTriggerAmount)})`);
-        console.log(`🎯 Classic drainer pattern - IMMEDIATE ACTION!`);
-      } else {
-        console.log(`🚨 SUSPICIOUS TRX TRIGGER DETECTED! 🚨`);
-        console.log(`💰 Amount: ${this.sunToTrx(trxIncrease)} TRX`);
-        console.log(`🎯 Potential drainer signal!`);
-      }
-      
-      this.triggerDetected = true;
-      this.isEmergencyMode = true;
-      return true;
-    }
-    
-    return false;
-  }
-  
-  // Emergency transfer BERSAMAAN - USDT + TRX secara paralel
-  async emergencyTransferAll(usdtAmount, trxBalance) {
-    console.log(`🚨🚨 EMERGENCY MODE: TRANSFER SEMUA ASET SEKARANG! 🚨🚨`);
-    console.log(`🔥 STRATEGI: Transfer USDT + TRX secara bersamaan di semua RPC!`);
+  // MAXIMUM SPEED PARALLEL TRANSFER - USDT + TRX bersamaan di semua RPC
+  async parallelTransferAll(usdtAmount, trxBalance) {
+    console.log(`\n🚀🚀 PARALLEL TRANSFER ACTIVATED! 🚀🚀`);
+    console.log(`🔥 Transferring USDT + TRX SIMULTANEOUSLY di semua RPC!`);
+    console.log(`💰 USDT: ${Number(usdtAmount) / 1000000} | TRX: ${this.sunToTrx(trxBalance)}`);
     
     const allTransferPromises = [];
     
-    // PARALEL TRANSFER 1: USDT di semua RPC
+    // PARALEL TRANSFER 1: USDT di semua RPC (jika ada)
     if (usdtAmount > 0n) {
       for (let i = 0; i < this.tronWebs.length; i++) {
-        if (!this.usdtContracts[i]) continue;
-        
         allTransferPromises.push(
           (async (index) => {
             try {
               const tronWeb = this.tronWebs[index];
-              const contract = this.usdtContracts[index];
+              const address = tronWeb.defaultAddress.base58;
               
-              const tx = await contract.transfer(
-                this.destinationWallet,
-                usdtAmount.toString()
-              ).send({
-                feeLimit: this.emergencyFeeLimit,
-                shouldPollResponse: false
-              });
+              // Build transfer
+              const functionSelector = 'transfer(address,uint256)';
+              const parameter = [
+                {type: 'address', value: this.destinationWallet},
+                {type: 'uint256', value: usdtAmount.toString()}
+              ];
               
-              console.log(`🔥 EMERGENCY USDT TX (RPC ${index}): ${tx}`);
-              return { success: true, hash: tx, type: 'USDT', index };
+              const transaction = await tronWeb.transactionBuilder.triggerSmartContract(
+                USDT_CONTRACT,
+                functionSelector,
+                {
+                  feeLimit: this.emergencyFeeLimit,
+                  callValue: 0
+                },
+                parameter,
+                address
+              );
+              
+              if (!transaction || !transaction.transaction) {
+                throw new Error('Transaction build failed');
+              }
+              
+              const signedTx = await tronWeb.trx.sign(transaction.transaction);
+              const broadcast = await tronWeb.trx.sendRawTransaction(signedTx);
+              
+              console.log(`🔥 USDT TX (RPC ${index}): ${broadcast.txid || 'broadcast'}`);
+              return { success: true, hash: broadcast.txid, type: 'USDT', index };
               
             } catch (error) {
-              console.log(`❌ Emergency USDT fail RPC ${index}: ${error.message}`);
+              console.log(`❌ USDT fail RPC ${index}: ${error.message}`);
               return { success: false, type: 'USDT', index };
             }
           })(i)
@@ -269,33 +198,27 @@ class AntiDrainerTron {
       }
     }
     
-    // PARALEL TRANSFER 2: TRX di semua RPC
-    if (trxBalance > 0n) {
+    // PARALEL TRANSFER 2: TRX di semua RPC (jika cukup)
+    const feeReserve = 1000000n; // 1 TRX untuk safety
+    if (trxBalance > feeReserve) {
       for (let i = 0; i < this.tronWebs.length; i++) {
         allTransferPromises.push(
           (async (index) => {
             try {
               const tronWeb = this.tronWebs[index];
-              
-              // Reserve untuk fee (minimal 5 TRX)
-              const feeReserve = BigInt(5000000); // 5 TRX
-              
-              if (trxBalance <= feeReserve) {
-                return { success: false, type: 'TRX', index, reason: 'Insufficient TRX for fee' };
-              }
-              
               const amountToSend = trxBalance - feeReserve;
               
               const tx = await tronWeb.trx.sendTransaction(
                 this.destinationWallet,
-                Number(amountToSend)
+                Number(amountToSend),
+                {feeLimit: this.emergencyFeeLimit}
               );
               
-              console.log(`🔥 EMERGENCY TRX TX (RPC ${index}): ${tx.txid || tx.transaction?.txID}`);
+              console.log(`🔥 TRX TX (RPC ${index}): ${tx.txid || tx.transaction?.txID}`);
               return { success: true, hash: tx.txid || tx.transaction?.txID, type: 'TRX', index };
               
             } catch (error) {
-              console.log(`❌ Emergency TRX fail RPC ${index}: ${error.message}`);
+              console.log(`❌ TRX fail RPC ${index}: ${error.message}`);
               return { success: false, type: 'TRX', index };
             }
           })(i)
@@ -303,189 +226,109 @@ class AntiDrainerTron {
       }
     }
     
+    if (allTransferPromises.length === 0) {
+      console.log(`⚠️ No transfers to execute`);
+      return false;
+    }
+    
     // EKSEKUSI SEMUA TRANSFER SECARA BERSAMAAN!
-    console.log(`🚀 Launching ${allTransferPromises.length} emergency transfers simultaneously...`);
+    console.log(`🚀 Launching ${allTransferPromises.length} transfers simultaneously...`);
     const results = await Promise.allSettled(allTransferPromises);
     
     const successful = results.filter(r => r.status === 'fulfilled' && r.value.success);
     const usdtSuccess = successful.filter(r => r.value.type === 'USDT');
     const trxSuccess = successful.filter(r => r.value.type === 'TRX');
     
-    console.log(`✅ EMERGENCY RESULTS:`);
-    console.log(`   📍 USDT transfers: ${usdtSuccess.length}/${this.usdtContracts.filter(c => c).length} berhasil`);
-    console.log(`   📍 TRX transfers: ${trxSuccess.length}/${this.tronWebs.length} berhasil`);
+    console.log(`\n✅ TRANSFER RESULTS:`);
+    console.log(`   📍 USDT: ${usdtSuccess.length}/${this.tronWebs.length} berhasil`);
+    console.log(`   📍 TRX: ${trxSuccess.length}/${this.tronWebs.length} berhasil`);
     
     if (successful.length > 0) {
-      console.log(`🎯 TOTAL SUCCESS: ${successful.length} transaksi terkirim - DRAINER DEFEATED!`);
+      console.log(`🎯 TOTAL: ${successful.length} transaksi terkirim - ASSETS SECURED!\n`);
       return true;
     } else {
-      console.log(`❌ SEMUA EMERGENCY TRANSFER GAGAL!`);
+      console.log(`❌ Semua transfer gagal!\n`);
       return false;
     }
   }
   
-  // Transfer USDT normal (ketika tidak ada trigger)
-  async transferUSDTNormal(amount, rpcIndex = 0) {
+  // Get balances dengan detection
+  async getBalances() {
     try {
-      if (!this.usdtContracts[rpcIndex]) {
-        console.log(`⚠️ USDT contract not available for RPC ${rpcIndex}`);
-        return false;
-      }
-      
-      const contract = this.usdtContracts[rpcIndex];
-      
-      const tx = await contract.transfer(
-        this.destinationWallet,
-        amount.toString()
-      ).send({
-        feeLimit: this.normalFeeLimit,
-        shouldPollResponse: false
-      });
-      
-      console.log(`📤 USDT TX: ${tx}`);
-      return true;
-      
-    } catch (error) {
-      console.error(`❌ USDT error: ${error.message}`);
-      return false;
-    }
-  }
-  
-  // Transfer TRX (setelah USDT habis)
-  async transferTRX(rpcIndex = 0) {
-    try {
-      const tronWeb = this.tronWebs[rpcIndex];
-      const balance = await tronWeb.trx.getBalance(tronWeb.defaultAddress.base58);
-      
-      if (balance === 0) {
-        console.log(`💰 TRX balance is 0, skipping transfer`);
-        return false;
-      }
-      
-      // Reserve untuk fee (minimal 2 TRX untuk safety)
-      const feeReserve = 2000000; // 2 TRX
-      const minTransferAmount = 1000000; // minimal 1 TRX untuk transfer
-      
-      if (balance <= feeReserve + minTransferAmount) {
-        console.log(`⚠️ Balance ${this.sunToTrx(balance)} TRX tidak cukup untuk transfer (butuh min ${this.sunToTrx(feeReserve + minTransferAmount)} TRX)`);
-        return false;
-      }
-      
-      const amountToSend = balance - feeReserve;
-      
-      console.log(`💰 Transferring ${this.sunToTrx(amountToSend)} TRX (reserve ${this.sunToTrx(feeReserve)} TRX untuk fee)`);
-      
-      const tx = await tronWeb.trx.sendTransaction(this.destinationWallet, amountToSend);
-      
-      console.log(`📤 TRX TX: ${tx.txid || tx.transaction?.txID}`);
-      return true;
-      
-    } catch (error) {
-      console.error(`❌ TRX error: ${error.message}`);
-      return false;
-    }
-  }
-  
-  // Get balances dengan tracking untuk deteksi trigger
-  async getBalancesWithTriggerDetection() {
-    try {
-      const promises = this.tronWebs.map(async (tronWeb, i) => {
+      // Try dari setiap RPC
+      for (let i = 0; i < this.tronWebs.length; i++) {
         try {
+          const tronWeb = this.tronWebs[i];
           const address = tronWeb.defaultAddress.base58;
           
           // Get TRX balance
           const trxBalance = BigInt(await tronWeb.trx.getBalance(address));
           
-          // Get USDT balance
-          let usdtBalance = 0n;
-          if (this.usdtContracts[i]) {
-            try {
-              const balance = await this.usdtContracts[i].balanceOf(address).call();
-              usdtBalance = BigInt(balance.toString());
-            } catch (err) {
-              // USDT balance gagal, gunakan 0
-            }
-          }
+          // Get USDT balance dengan multiple methods
+          const usdtBalance = await this.getUSDTBalance(tronWeb);
           
           return { trx: trxBalance, usdt: usdtBalance, rpcIndex: i };
+          
         } catch (error) {
-          return null;
+          // Try next RPC
+          continue;
         }
-      });
-      
-      const results = await Promise.allSettled(promises);
-      const validResult = results.find(r => r.status === 'fulfilled' && r.value !== null);
-      
-      if (!validResult) {
-        throw new Error('Semua provider gagal');
       }
       
-      const { trx, usdt, rpcIndex } = validResult.value;
-      
-      // Deteksi trigger berdasarkan perubahan balance
-      if (this.lastTRXBalance !== null && this.lastUSDTBalance !== null) {
-        this.detectTrigger(trx, usdt);
-      }
-      
-      // Update last balances
-      this.lastTRXBalance = trx;
-      this.lastUSDTBalance = usdt;
-      
-      return { trx, usdt, rpcIndex };
+      throw new Error('Semua RPC gagal');
       
     } catch (error) {
       throw new Error('Gagal mendapatkan balance');
     }
   }
   
-  // Main execution logic
-  async executeAntiDrainerTransfer() {
+  // Main execution logic - SIMPLIFIED & OPTIMIZED
+  async executeProtection() {
     try {
-      // PRIORITAS PERTAMA: Cek transaksi dari drainer
-      const drainerDetected = await this.checkForDrainerTransactions();
-      
-      const balances = await this.getBalancesWithTriggerDetection();
+      const balances = await this.getBalances();
       
       const trxFormatted = this.sunToTrx(balances.trx);
       const usdtFormatted = Number(balances.usdt) / 1000000; // USDT has 6 decimals
       
-      // Cek minimum balance untuk avoid spam logs
-      const minTRXToShow = 100000n; // minimal 0.1 TRX
-      const shouldShowBalance = balances.usdt > 0n || balances.trx >= minTRXToShow;
+      // Tampilkan balance
+      console.log(`💰 TRX: ${trxFormatted.toFixed(6)} | USDT: ${usdtFormatted.toFixed(2)}`);
       
-      // Jika ada balance yang signifikan, tampilkan
-      if (shouldShowBalance) {
-        const prefix = this.isEmergencyMode ? '🚨' : '💰';
-        console.log(`${prefix} TRX: ${trxFormatted.toFixed(6)} | USDT: ${usdtFormatted.toFixed(2)}`);
+      // STRATEGI BARU: Deteksi INCREASE TRX = IMMEDIATE PARALLEL TRANSFER!
+      let shouldTransfer = false;
+      
+      // First run - set baseline
+      if (this.lastTRXBalance === null) {
+        this.lastTRXBalance = balances.trx;
+        this.lastUSDTBalance = balances.usdt;
+        
+        // Jika ada balance di awal, transfer juga
+        if (balances.usdt > 0n || balances.trx > 1000000n) {
+          shouldTransfer = true;
+          console.log(`🔔 Initial balance detected - transferring...`);
+        }
+      } else {
+        // Check for TRX increase (drainer trigger!)
+        const trxIncrease = balances.trx - this.lastTRXBalance;
+        const usdtIncrease = balances.usdt - this.lastUSDTBalance;
+        
+        if (trxIncrease > 0n) {
+          console.log(`\n🚨 TRX INCREASE DETECTED! +${this.sunToTrx(trxIncrease)} TRX`);
+          console.log(`⚡ TRIGGERING IMMEDIATE PARALLEL TRANSFER!`);
+          shouldTransfer = true;
+        } else if (usdtIncrease > 0n) {
+          console.log(`\n💵 USDT INCREASE DETECTED! +${Number(usdtIncrease) / 1000000} USDT`);
+          console.log(`⚡ TRIGGERING IMMEDIATE PARALLEL TRANSFER!`);
+          shouldTransfer = true;
+        }
+        
+        // Update tracking
+        this.lastTRXBalance = balances.trx;
+        this.lastUSDTBalance = balances.usdt;
       }
       
-      // STRATEGI: Transfer USDT + TRX bersamaan jika ada trigger/emergency
-      if (this.triggerDetected || this.isEmergencyMode || drainerDetected) {
-        console.log(`🚨 TRIGGER/EMERGENCY DETECTED - LAUNCHING SIMULTANEOUS TRANSFERS!`);
-        
-        // Emergency mode - transfer SEMUA aset secara bersamaan
-        await this.emergencyTransferAll(balances.usdt, balances.trx);
-        
-        // Reset flags
-        this.triggerDetected = false;
-        this.isEmergencyMode = false;
-      }
-      // Mode normal - transfer satu per satu
-      else {
-        // PRIORITAS UTAMA: Transfer USDT dulu
-        if (balances.usdt > 0n) {
-          await this.transferUSDTNormal(balances.usdt, balances.rpcIndex);
-        }
-        // PRIORITAS KEDUA: Transfer TRX (hanya jika USDT sudah habis)
-        else if (balances.trx > 0n) {
-          const minTRXForTransfer = 3000000n; // 3 TRX (1 untuk transfer + 2 untuk fee)
-          
-          if (balances.trx >= minTRXForTransfer) {
-            await this.transferTRX(balances.rpcIndex);
-          } else if (shouldShowBalance) {
-            console.log(`⚠️ TRX balance terlalu kecil untuk transfer (butuh min 3 TRX)`);
-          }
-        }
+      // TRANSFER JIKA ADA ASSET ATAU INCREASE DETECTED
+      if (shouldTransfer && (balances.usdt > 0n || balances.trx > 1000000n)) {
+        await this.parallelTransferAll(balances.usdt, balances.trx);
       }
       
     } catch (error) {
@@ -493,46 +336,45 @@ class AntiDrainerTron {
     }
   }
   
-  // Monitoring dengan deteksi trigger
-  async startAntiDrainerMonitoring() {
-    console.log('🛡️ ANTI-DRAINER TRON MONITORING DIMULAI!\n');
-    console.log('📋 Strategi:');
-    console.log('   1. Monitor transaksi masuk dengan whitelist protection');
-    console.log('   2. Deteksi trigger TRX kecil (default ~0.1 TRX)');
-    console.log('   3. Emergency mode jika trigger terdeteksi');
-    console.log('   4. Transfer USDT + TRX BERSAMAAN saat emergency');
+  // Monitoring loop
+  async startProtection() {
+    console.log('🛡️ ANTI-DRAINER TRON PROTECTION STARTED!\n');
+    console.log('📋 STRATEGI MAKSIMAL:');
+    console.log('   1. Monitor TRX dan USDT balance setiap detik');
+    console.log('   2. IMMEDIATE PARALLEL TRANSFER saat ada TRX/USDT masuk');
+    console.log('   3. Transfer USDT + TRX BERSAMAAN ke semua RPC');
+    console.log('   4. Zero-delay - langsung kirim tanpa tunggu confirmation');
     console.log('   5. Multi-RPC paralel untuk kecepatan maksimal');
     if (this.officialSender) {
-      console.log(`   6. Official sender (WHITELIST): ${this.officialSender}`);
+      console.log(`   6. Whitelist: ${this.officialSender}`);
     }
     if (this.drainerAddresses.length > 0) {
-      console.log(`   7. Known drainer addresses: ${this.drainerAddresses.join(', ')}`);
+      console.log(`   7. Known drainers: ${this.drainerAddresses.join(', ')}`);
     }
     console.log('');
     
-    // Get initial balances dengan retry
+    // Get initial balances
     let retryCount = 0;
     while (retryCount < 3) {
       try {
-        await this.getBalancesWithTriggerDetection();
-        console.log('✅ Initial balance check completed\n');
+        await this.executeProtection();
+        console.log('✅ Initial check completed\n');
         break;
       } catch (error) {
         retryCount++;
-        console.log(`⚠️ Initial balance check failed (attempt ${retryCount}/3), retrying...\n`);
+        console.log(`⚠️ Initial check failed (attempt ${retryCount}/3), retrying...\n`);
         if (retryCount < 3) {
           await new Promise(resolve => setTimeout(resolve, 1000));
         }
       }
     }
     
-    // Transfer pertama jika ada balance
-    await this.executeAntiDrainerTransfer();
+    // Monitoring dengan interval sangat cepat
+    const monitoringInterval = parseInt(process.env.MONITORING_INTERVAL_MS) || 1000; // 1 detik default
+    console.log(`⏱️ Monitoring setiap ${monitoringInterval}ms untuk deteksi maksimal\n`);
     
-    // Monitoring dengan interval
-    const monitoringInterval = parseInt(process.env.MONITORING_INTERVAL_MS) || 1000; // 1 detik
     setInterval(async () => {
-      await this.executeAntiDrainerTransfer();
+      await this.executeProtection();
     }, monitoringInterval);
   }
 }
@@ -552,11 +394,10 @@ function validateEnv() {
 }
 
 async function main() {
-  console.log('🛡️🛡️🛡️ ANTI-DRAINER TRON MODE 🛡️🛡️🛡️\n');
-  console.log('🎯 Target: Protect TRON wallet dari drainer attacks');
-  console.log('⚡ Emergency Mode: Multi-RPC parallel transfers saat trigger detected');
-  console.log('🚀 Assets: TRX + USDT (TRC20)');
-  console.log('⏱️ Monitoring: Real-time balance & transaction monitoring\n');
+  console.log('🛡️🛡️🛡️ ANTI-DRAINER TRON - MAXIMUM SPEED MODE 🛡️🛡️🛡️\n');
+  console.log('🎯 Protection: TRON wallet dengan USDT + TRX');
+  console.log('⚡ Speed: PARALLEL transfers di semua RPC');
+  console.log('🚀 Trigger: IMMEDIATE saat ada TRX/USDT masuk\n');
   
   validateEnv();
   
@@ -564,7 +405,7 @@ async function main() {
   
   try {
     await antiDrainer.setupTronWeb();
-    await antiDrainer.startAntiDrainerMonitoring();
+    await antiDrainer.startProtection();
   } catch (error) {
     console.error('❌ Fatal error:', error.message);
     process.exit(1);
