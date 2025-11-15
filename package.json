@@ -7,7 +7,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "ethers": "^6.13.0",
+    "tronweb": "^5.3.2",
     "dotenv": "^16.4.5"
   },
   "engines": {
