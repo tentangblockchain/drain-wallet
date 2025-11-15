@@ -361,23 +361,33 @@ class AntiDrainerTron {
           }
         }
         
-        // Detect multisig on first failure
-        if (this.consecutiveFailures === this.maxConsecutiveFailures && !this.multisigDetected) {
+        // Detect multisig setelah 3 kali kegagalan (lebih cepat)
+        if (this.consecutiveFailures === 3 && !this.multisigDetected) {
           console.log(`\n🔍 Checking for multisig configuration...`);
           this.multisigDetected = await this.checkMultisig();
           
           if (this.multisigDetected) {
-            console.log(`\n⚠️⚠️⚠️ MULTISIG WALLET DETECTED! ⚠️⚠️⚠️`);
-            console.log(`❌ Transaksi memerlukan multiple signatures!`);
-            console.log(`💡 SOLUSI:`);
-            console.log(`   1. Transfer aset secara manual menggunakan semua signer`);
-            console.log(`   2. Nonaktifkan multisig jika memungkinkan`);
-            console.log(`   3. Tambahkan private key semua signer ke sistem`);
-            console.log(`\n⚠️ Sistem akan tetap mencoba broadcast, tapi transaksi tidak akan sukses tanpa semua signature!\n`);
+            console.log(`\n🚨🚨🚨 MULTISIG WALLET TERDETEKSI! 🚨🚨🚨`);
+            console.log(`\n❌ WALLET INI MENGGUNAKAN MULTISIG!`);
+            console.log(`❌ Transaksi TIDAK BISA dilakukan dengan 1 private key saja!`);
+            console.log(`\n📋 CARA MENGATASI:`);
+            console.log(`\n1️⃣ TRANSFER MANUAL:`);
+            console.log(`   • Gunakan TronLink atau wallet lain`);
+            console.log(`   • Kumpulkan semua signer untuk approve transaksi`);
+            console.log(`   • Transfer USDT + TRX ke: ${this.destinationWallet}`);
+            console.log(`\n2️⃣ NONAKTIFKAN MULTISIG:`);
+            console.log(`   • Buka pengaturan wallet di TronScan`);
+            console.log(`   • Ubah permission structure ke single-sig`);
+            console.log(`   • Butuh approval dari semua signer saat ini`);
+            console.log(`\n3️⃣ ALTERNATIF - Stargate/Bridge:`);
+            console.log(`   • Stargate Finance TIDAK membantu masalah multisig`);
+            console.log(`   • Stargate hanya untuk cross-chain bridge`);
+            console.log(`   • Tetap butuh multisig approval untuk transfer`);
+            console.log(`\n⚠️ Sistem akan berhenti mencoba. Selesaikan multisig dulu!\n`);
             
-            // Increase backoff significantly for multisig
-            this.consecutiveFailures = this.maxConsecutiveFailures * 2;
-            return;
+            // Stop trying completely for multisig
+            this.multisigDetected = true;
+            process.exit(0);
           }
         }
         
