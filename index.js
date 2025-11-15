@@ -1,330 +1,320 @@
-// anti-trigger-drainer.js - COUNTER ATTACK MODE
-const { ethers } = require('ethers');
+// anti-drainer-tron.js - TRON WALLET PROTECTION
+const TronWeb = require('tronweb');
 require('dotenv').config();
 
-// Multi RPC dengan endpoint yang lebih reliable dari .env
+// Multi RPC endpoints untuk TRON
 const RPC_ENDPOINTS = process.env.RPC_ENDPOINTS ? 
   process.env.RPC_ENDPOINTS.split(',') : [
-    'https://arb1.arbitrum.io/rpc',
-    'https://arb-mainnet.g.alchemy.com/v2/leVOCngLm1e3kAoytLokG8n7eyVSLJsI'
+    'https://api.trongrid.io',
+    'https://api.tronstack.io',
+    'https://api.shasta.trongrid.io'
   ];
 
-const TRN_CONTRACT = process.env.TRN_CONTRACT_ADDRESS || '0x1114982539a2bfb84e8b9e4e320bbc04532a9e44';
-const CHAIN_ID = parseInt(process.env.CHAIN_ID) || 42161;
+// USDT Contract Address (TRC20) - Default USDT di mainnet
+const USDT_CONTRACT = process.env.USDT_CONTRACT_ADDRESS || 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 
-const ERC20_ABI = [
-  'function balanceOf(address owner) view returns (uint256)',
-  'function transfer(address to, uint256 amount) returns (bool)',
-  'function decimals() view returns (uint8)',
-  'function symbol() view returns (string)'
+// TRC20 ABI untuk USDT
+const TRC20_ABI = [
+  {
+    "constant": true,
+    "inputs": [{"name": "who", "type": "address"}],
+    "name": "balanceOf",
+    "outputs": [{"name": "", "type": "uint256"}],
+    "type": "function"
+  },
+  {
+    "constant": false,
+    "inputs": [
+      {"name": "to", "type": "address"},
+      {"name": "value", "type": "uint256"}
+    ],
+    "name": "transfer",
+    "outputs": [{"name": "", "type": "bool"}],
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [],
+    "name": "decimals",
+    "outputs": [{"name": "", "type": "uint8"}],
+    "type": "function"
+  }
 ];
 
-class AntiTriggerDrainer {
+class AntiDrainerTron {
   constructor() {
-    // Setup providers dengan error handling
-    this.providers = [];
-    this.validProviders = [];
-
-    console.log(`🔗 Testing RPC connections...`);
-
-    // Test dan filter RPC yang working
-    this.setupProviders();
-
-    this.wallet = null;
+    this.tronWebs = [];
+    this.validRpcIndexes = [];
+    this.mainTronWeb = null;
+    
     this.destinationWallet = process.env.DESTINATION_WALLET;
-    this.wallets = [];
-    this.trnContracts = [];
-
+    this.usdtContracts = [];
+    
     // Tracking untuk deteksi trigger
-    this.lastETHBalance = 0n;
-    this.lastTRNBalance = 0n;
+    this.lastTRXBalance = 0n;
+    this.lastUSDTBalance = 0n;
     this.triggerDetected = false;
     this.isEmergencyMode = false;
-    this.lastNonce = null;
     this.lastBlockNumber = 0;
-    this.lastTriggerTime = 0;
-
-    // Alamat drainer yang terdeteksi dari .env
+    
+    // Alamat drainer yang terdeteksi
     this.drainerAddresses = [
-      process.env.DRAINER_ADDRESS_1 || '0x504cc6d9085cc069f5504c7a81b11685d399c023',
-      process.env.DRAINER_ADDRESS_2 || '0x117129b064035de653d40751e49f13cea0f1f8c5'
-    ].filter(addr => addr && addr !== ''); // Filter empty addresses
-
-    // Wallet resmi TRN airdrop (WHITELIST - tidak akan trigger emergency)
-    this.officialTRNSender = process.env.OFFICIAL_TRN_SENDER || '0x571b2a1f1b74340caec08c62a267783a6703d9b0';
-
-    // Threshold untuk deteksi trigger ETH - dari .env
-    this.triggerThreshold = ethers.parseEther(process.env.TRIGGER_THRESHOLD_ETH || '0.000015');
-    this.exactTriggerAmount = ethers.parseEther(process.env.EXACT_TRIGGER_AMOUNT_ETH || '0.00001');
+      process.env.DRAINER_ADDRESS_1 || '',
+      process.env.DRAINER_ADDRESS_2 || ''
+    ].filter(addr => addr && addr !== '');
+    
+    // Alamat official sender (whitelist)
+    this.officialSender = process.env.OFFICIAL_SENDER || '';
+    
+    // Threshold untuk deteksi trigger (dalam SUN, 1 TRX = 1,000,000 SUN)
+    this.triggerThreshold = BigInt(parseFloat(process.env.TRIGGER_THRESHOLD_TRX || '0.1') * 1000000);
+    this.exactTriggerAmount = BigInt(parseFloat(process.env.EXACT_TRIGGER_AMOUNT_TRX || '0.05') * 1000000);
+    
+    // Fee limits (dalam SUN)
+    this.normalFeeLimit = parseInt(process.env.NORMAL_FEE_LIMIT) || 10000000; // 10 TRX
+    this.emergencyFeeLimit = parseInt(process.env.EMERGENCY_FEE_LIMIT) || 50000000; // 50 TRX
+    
+    console.log('🔗 Testing TRON RPC connections...');
   }
-
-  async setupProviders() {
+  
+  async setupTronWeb() {
+    const privateKey = process.env.PRIVATE_KEY;
+    
     for (let i = 0; i < RPC_ENDPOINTS.length; i++) {
       try {
-        const provider = new ethers.JsonRpcProvider(RPC_ENDPOINTS[i]);
-
-        // Test connection dengan timeout
-        const testPromise = provider.getNetwork();
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout')), 3000)
-        );
-
-        await Promise.race([testPromise, timeoutPromise]);
-
-        this.providers.push(provider);
-        this.validProviders.push(i);
-        console.log(`✅ RPC ${i} connected: ${RPC_ENDPOINTS[i].substring(0, 30)}...`);
-
-      } catch (error) {
-        console.log(`❌ RPC ${i} failed: ${RPC_ENDPOINTS[i].substring(0, 30)}...`);
-      }
-    }
-
-    if (this.providers.length === 0) {
-      throw new Error('❌ Semua RPC endpoint gagal! Check koneksi internet.');
-    }
-
-    console.log(`🚀 ${this.providers.length} RPC endpoints ready!\n`);
-
-    // Setup wallet dan contracts untuk provider yang valid
-    this.mainProvider = this.providers[0];
-    this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.mainProvider);
-
-    this.wallets = this.providers.map(provider => 
-      new ethers.Wallet(process.env.PRIVATE_KEY, provider)
-    );
-
-    this.trnContracts = this.wallets.map(wallet => 
-      new ethers.Contract(TRN_CONTRACT, ERC20_ABI, wallet)
-    );
-
-    console.log(`🔑 Wallet: ${this.wallet.address}`);
-    console.log(`📍 Tujuan: ${this.destinationWallet}`);
-    console.log(`⚠️ Trigger Detection: ${ethers.formatEther(this.triggerThreshold)} ETH\n`);
-  }
-
-  async getNonce() {
-    try {
-      if (this.lastNonce !== null) {
-        this.lastNonce++;
-        return this.lastNonce;
-      }
-
-      const nonce = await this.mainProvider.getTransactionCount(this.wallet.address, 'pending');
-      this.lastNonce = nonce;
-      return nonce;
-    } catch (error) {
-      for (let provider of this.providers) {
+        const tronWeb = new TronWeb({
+          fullHost: RPC_ENDPOINTS[i],
+          privateKey: privateKey
+        });
+        
+        // Test connection
+        await Promise.race([
+          tronWeb.trx.getCurrentBlock(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
+        ]);
+        
+        this.tronWebs.push(tronWeb);
+        this.validRpcIndexes.push(i);
+        console.log(`✅ RPC ${i} connected: ${RPC_ENDPOINTS[i]}`);
+        
+        // Setup USDT contract
         try {
-          const nonce = await provider.getTransactionCount(this.wallet.address, 'pending');
-          this.lastNonce = nonce;
-          return nonce;
-        } catch (e) {
-          continue;
+          const usdtContract = await tronWeb.contract(TRC20_ABI, USDT_CONTRACT);
+          this.usdtContracts.push(usdtContract);
+        } catch (err) {
+          console.log(`⚠️ Warning: USDT contract setup failed for RPC ${i}`);
+          this.usdtContracts.push(null);
         }
+        
+      } catch (error) {
+        console.log(`❌ RPC ${i} failed: ${RPC_ENDPOINTS[i]}`);
       }
-      throw new Error('Semua RPC gagal untuk nonce');
     }
+    
+    if (this.tronWebs.length === 0) {
+      throw new Error('❌ Semua TRON RPC endpoint gagal! Check koneksi internet.');
+    }
+    
+    console.log(`🚀 ${this.tronWebs.length} TRON RPC endpoints ready!\n`);
+    
+    this.mainTronWeb = this.tronWebs[0];
+    const address = this.mainTronWeb.address.fromPrivateKey(privateKey);
+    
+    console.log(`🔑 Wallet: ${address}`);
+    console.log(`📍 Tujuan: ${this.destinationWallet}`);
+    console.log(`⚠️ Trigger Detection: ${this.triggerThreshold / 1000000n} TRX\n`);
   }
-
+  
+  // Konversi SUN ke TRX untuk display
+  sunToTrx(sun) {
+    return Number(sun) / 1000000;
+  }
+  
   // Monitor transaksi masuk dengan whitelist detection
   async checkForDrainerTransactions() {
     try {
-      const currentBlock = await this.mainProvider.getBlockNumber();
-
+      const currentBlock = await this.mainTronWeb.trx.getCurrentBlock();
+      const currentBlockNumber = currentBlock.block_header.raw_data.number;
+      
       if (this.lastBlockNumber === 0) {
-        this.lastBlockNumber = currentBlock;
+        this.lastBlockNumber = currentBlockNumber;
         return false;
       }
-
-      // Cek beberapa block terakhir untuk transaksi ke wallet kita
-      const blocksToCheck = Math.min(5, currentBlock - this.lastBlockNumber);
-
-      for (let i = 0; i <= blocksToCheck; i++) {
-        const blockNumber = currentBlock - i;
-        try {
-          const block = await this.mainProvider.getBlock(blockNumber, true);
-
-          if (block && block.transactions) {
-            for (const tx of block.transactions) {
-              // Cek jika transaksi ke wallet kita
-              if (tx.to && tx.to.toLowerCase() === this.wallet.address.toLowerCase()) {
-                const fromAddress = tx.from.toLowerCase();
-                const value = tx.value;
-
-                // WHITELIST: Skip jika dari wallet resmi TRN
-                if (fromAddress === this.officialTRNSender.toLowerCase()) {
-                  console.log(`✅ Legitimate TRN transaction from official sender: ${ethers.formatEther(value)} ETH`);
-                  continue;
-                }
-
-                // TRIGGER DETECTION: ETH kecil dari alamat tidak dikenal
-                if (value > 0n && value <= this.triggerThreshold) {
-                  console.log(`🚨🚨 TRIGGER DETECTED! 🚨🚨`);
-                  console.log(`📍 From: ${tx.from} (UNKNOWN SENDER)`);
-                  console.log(`💰 Amount: ${ethers.formatEther(value)} ETH`);
-                  console.log(`🎯 TX: ${tx.hash}`);
-                  console.log(`⚠️ DRAINER SIGNAL - EMERGENCY MODE ACTIVATED!`);
-
-                  this.triggerDetected = true;
-                  this.isEmergencyMode = true;
-                  this.lastTriggerTime = Date.now();
-                  this.lastBlockNumber = currentBlock;
-                  return true;
-                }
-
-                // KNOWN DRAINER: Alamat drainer yang sudah terdeteksi
-                if (this.drainerAddresses.some(addr => addr.toLowerCase() === fromAddress)) {
-                  console.log(`🚨🚨 KNOWN DRAINER DETECTED! 🚨🚨`);
-                  console.log(`📍 From: ${tx.from}`);
-                  console.log(`💰 Amount: ${ethers.formatEther(value)} ETH`);
-                  console.log(`🎯 TX: ${tx.hash}`);
-                  console.log(`⚠️ EMERGENCY MODE ACTIVATED!`);
-
-                  this.triggerDetected = true;
-                  this.isEmergencyMode = true;
-                  this.lastTriggerTime = Date.now();
-                  this.lastBlockNumber = currentBlock;
-                  return true;
-                }
+      
+      const myAddress = this.mainTronWeb.defaultAddress.base58;
+      
+      // Cek transaksi ke wallet kita di block terakhir
+      try {
+        const transactions = await this.mainTronWeb.trx.getTransactionsRelated(myAddress, 'to', 10);
+        
+        if (transactions && transactions.length > 0) {
+          for (const tx of transactions) {
+            if (!tx.raw_data || !tx.raw_data.contract) continue;
+            
+            const contract = tx.raw_data.contract[0];
+            if (contract.type === 'TransferContract') {
+              const value = BigInt(contract.parameter.value.amount || 0);
+              const fromAddress = this.mainTronWeb.address.fromHex(contract.parameter.value.owner_address);
+              
+              // WHITELIST: Skip jika dari official sender
+              if (this.officialSender && fromAddress === this.officialSender) {
+                console.log(`✅ Legitimate transaction from official sender: ${this.sunToTrx(value)} TRX`);
+                continue;
+              }
+              
+              // TRIGGER DETECTION: TRX kecil dari alamat tidak dikenal
+              if (value > 0n && value <= this.triggerThreshold) {
+                console.log(`🚨🚨 TRIGGER DETECTED! 🚨🚨`);
+                console.log(`📍 From: ${fromAddress} (UNKNOWN SENDER)`);
+                console.log(`💰 Amount: ${this.sunToTrx(value)} TRX`);
+                console.log(`🎯 TX: ${tx.txID}`);
+                console.log(`⚠️ DRAINER SIGNAL - EMERGENCY MODE ACTIVATED!`);
+                
+                this.triggerDetected = true;
+                this.isEmergencyMode = true;
+                this.lastBlockNumber = currentBlockNumber;
+                return true;
+              }
+              
+              // KNOWN DRAINER: Alamat drainer yang sudah terdeteksi
+              if (this.drainerAddresses.some(addr => addr === fromAddress)) {
+                console.log(`🚨🚨 KNOWN DRAINER DETECTED! 🚨🚨`);
+                console.log(`📍 From: ${fromAddress}`);
+                console.log(`💰 Amount: ${this.sunToTrx(value)} TRX`);
+                console.log(`🎯 TX: ${tx.txID}`);
+                console.log(`⚠️ EMERGENCY MODE ACTIVATED!`);
+                
+                this.triggerDetected = true;
+                this.isEmergencyMode = true;
+                this.lastBlockNumber = currentBlockNumber;
+                return true;
               }
             }
           }
-        } catch (blockError) {
-          // Skip block jika error
-          continue;
         }
+      } catch (txError) {
+        // Skip jika error getting transactions
       }
-
-      this.lastBlockNumber = currentBlock;
+      
+      this.lastBlockNumber = currentBlockNumber;
       return false;
-
+      
     } catch (error) {
-      // Fallback ke deteksi balance jika monitoring transaksi gagal
       return false;
     }
   }
-
-  // Deteksi trigger ETH dari drainer (fallback method)
-  detectTrigger(currentETH, currentTRN) {
-    // Cek apakah ada ETH masuk yang kecil (trigger dari drainer)
-    const ethIncrease = currentETH - this.lastETHBalance;
-
-    // Trigger terdeteksi jika:
-    // 1. Ada penambahan ETH kecil (~0.00001 ETH)
-    // 2. TRN balance masih ada
-    // 3. Bukan dari wallet resmi (sudah dicek di checkForDrainerTransactions)
-    if (ethIncrease > 0n && 
-        ethIncrease <= this.triggerThreshold && 
-        currentTRN > 0n) {
-
-      // Cek apakah ini exact amount 0.00001 ETH (trigger klasik drainer)
-      if (ethIncrease === this.exactTriggerAmount) {
+  
+  // Deteksi trigger berdasarkan perubahan balance (fallback method)
+  detectTrigger(currentTRX, currentUSDT) {
+    const trxIncrease = currentTRX - this.lastTRXBalance;
+    
+    // Trigger terdeteksi jika ada penambahan TRX kecil dan masih ada USDT
+    if (trxIncrease > 0n && 
+        trxIncrease <= this.triggerThreshold && 
+        currentUSDT > 0n) {
+      
+      if (trxIncrease === this.exactTriggerAmount) {
         console.log(`🚨🚨 EXACT DRAINER TRIGGER DETECTED! 🚨🚨`);
-        console.log(`💰 Amount: ${ethers.formatEther(ethIncrease)} ETH (EXACT 0.00001)`);
+        console.log(`💰 Amount: ${this.sunToTrx(trxIncrease)} TRX (EXACT ${this.sunToTrx(this.exactTriggerAmount)})`);
         console.log(`🎯 Classic drainer pattern - IMMEDIATE ACTION!`);
       } else {
-        console.log(`🚨 SUSPICIOUS ETH TRIGGER DETECTED! 🚨`);
-        console.log(`💰 Amount: ${ethers.formatEther(ethIncrease)} ETH`);
+        console.log(`🚨 SUSPICIOUS TRX TRIGGER DETECTED! 🚨`);
+        console.log(`💰 Amount: ${this.sunToTrx(trxIncrease)} TRX`);
         console.log(`🎯 Potential drainer signal!`);
       }
-
+      
       this.triggerDetected = true;
       this.isEmergencyMode = true;
-
       return true;
     }
-
+    
     return false;
   }
-
-  // Emergency transfer BERSAMAAN - TRN + ETH secara paralel untuk mengalahkan drainer!
-  async emergencyTransferAll(trnAmount, ethBalance) {
+  
+  // Emergency transfer BERSAMAAN - USDT + TRX secara paralel
+  async emergencyTransferAll(usdtAmount, trxBalance) {
     console.log(`🚨🚨 EMERGENCY MODE: TRANSFER SEMUA ASET SEKARANG! 🚨🚨`);
-    console.log(`🔥 STRATEGI: Transfer TRN + ETH secara bersamaan di semua RPC!`);
-
+    console.log(`🔥 STRATEGI: Transfer USDT + TRX secara bersamaan di semua RPC!`);
+    
     const allTransferPromises = [];
-
-    // PARALEL TRANSFER 1: TRN di semua RPC
-    if (trnAmount > 0n) {
-      const trnPromises = this.trnContracts.map(async (contract, index) => {
-        try {
-          const feeData = await this.providers[index].getFeeData();
-          const emergencyMultiplier = BigInt(process.env.EMERGENCY_GAS_MULTIPLIER || '1500'); // 1500% untuk beat drainer!
-          const gasPrice = feeData.gasPrice * emergencyMultiplier / 100n;
-
-          const nonce = await this.getNonce();
-
-          const tx = await contract.transfer(this.destinationWallet, trnAmount, {
-            gasLimit: 120000n,
-            gasPrice: gasPrice,
-            nonce: nonce
-          });
-
-          console.log(`🔥 EMERGENCY TRN TX (RPC ${index}): ${tx.hash}`);
-          return { success: true, hash: tx.hash, type: 'TRN', index };
-
-        } catch (error) {
-          console.log(`❌ Emergency TRN fail RPC ${index}: ${error.message}`);
-          return { success: false, type: 'TRN', index };
-        }
-      });
-
-      allTransferPromises.push(...trnPromises);
+    
+    // PARALEL TRANSFER 1: USDT di semua RPC
+    if (usdtAmount > 0n) {
+      for (let i = 0; i < this.tronWebs.length; i++) {
+        if (!this.usdtContracts[i]) continue;
+        
+        allTransferPromises.push(
+          (async (index) => {
+            try {
+              const tronWeb = this.tronWebs[index];
+              const contract = this.usdtContracts[index];
+              
+              const tx = await contract.transfer(
+                this.destinationWallet,
+                usdtAmount.toString()
+              ).send({
+                feeLimit: this.emergencyFeeLimit,
+                shouldPollResponse: false
+              });
+              
+              console.log(`🔥 EMERGENCY USDT TX (RPC ${index}): ${tx}`);
+              return { success: true, hash: tx, type: 'USDT', index };
+              
+            } catch (error) {
+              console.log(`❌ Emergency USDT fail RPC ${index}: ${error.message}`);
+              return { success: false, type: 'USDT', index };
+            }
+          })(i)
+        );
+      }
     }
-
-    // PARALEL TRANSFER 2: ETH di semua RPC
-    if (ethBalance > 0n) {
-      const ethPromises = this.wallets.map(async (wallet, index) => {
-        try {
-          const provider = this.providers[index];
-          const feeData = await provider.getFeeData();
-          const emergencyMultiplier = BigInt(process.env.EMERGENCY_GAS_MULTIPLIER || '1500'); // 1500% untuk beat drainer!
-          const gasPrice = feeData.gasPrice * emergencyMultiplier / 100n;
-
-          const gasLimit = 21000n;
-          const gasCost = gasLimit * gasPrice;
-
-          // Cek apakah ETH cukup untuk gas
-          if (ethBalance <= gasCost) {
-            return { success: false, type: 'ETH', index, reason: 'Insufficient ETH for gas' };
-          }
-
-          const amountToSend = ethBalance - gasCost;
-          const nonce = await this.getNonce();
-
-          const tx = await wallet.sendTransaction({
-            to: this.destinationWallet,
-            value: amountToSend,
-            gasLimit: gasLimit,
-            gasPrice: gasPrice,
-            nonce: nonce
-          });
-
-          console.log(`🔥 EMERGENCY ETH TX (RPC ${index}): ${tx.hash}`);
-          return { success: true, hash: tx.hash, type: 'ETH', index };
-
-        } catch (error) {
-          console.log(`❌ Emergency ETH fail RPC ${index}: ${error.message}`);
-          return { success: false, type: 'ETH', index };
-        }
-      });
-
-      allTransferPromises.push(...ethPromises);
+    
+    // PARALEL TRANSFER 2: TRX di semua RPC
+    if (trxBalance > 0n) {
+      for (let i = 0; i < this.tronWebs.length; i++) {
+        allTransferPromises.push(
+          (async (index) => {
+            try {
+              const tronWeb = this.tronWebs[index];
+              
+              // Reserve untuk fee (minimal 5 TRX)
+              const feeReserve = BigInt(5000000); // 5 TRX
+              
+              if (trxBalance <= feeReserve) {
+                return { success: false, type: 'TRX', index, reason: 'Insufficient TRX for fee' };
+              }
+              
+              const amountToSend = trxBalance - feeReserve;
+              
+              const tx = await tronWeb.trx.sendTransaction(
+                this.destinationWallet,
+                Number(amountToSend)
+              );
+              
+              console.log(`🔥 EMERGENCY TRX TX (RPC ${index}): ${tx.txid || tx.transaction?.txID}`);
+              return { success: true, hash: tx.txid || tx.transaction?.txID, type: 'TRX', index };
+              
+            } catch (error) {
+              console.log(`❌ Emergency TRX fail RPC ${index}: ${error.message}`);
+              return { success: false, type: 'TRX', index };
+            }
+          })(i)
+        );
+      }
     }
-
+    
     // EKSEKUSI SEMUA TRANSFER SECARA BERSAMAAN!
     console.log(`🚀 Launching ${allTransferPromises.length} emergency transfers simultaneously...`);
     const results = await Promise.allSettled(allTransferPromises);
-
+    
     const successful = results.filter(r => r.status === 'fulfilled' && r.value.success);
-    const trnSuccess = successful.filter(r => r.value.type === 'TRN');
-    const ethSuccess = successful.filter(r => r.value.type === 'ETH');
-
+    const usdtSuccess = successful.filter(r => r.value.type === 'USDT');
+    const trxSuccess = successful.filter(r => r.value.type === 'TRX');
+    
     console.log(`✅ EMERGENCY RESULTS:`);
-    console.log(`   📍 TRN transfers: ${trnSuccess.length}/${this.trnContracts.length} berhasil`);
-    console.log(`   📍 ETH transfers: ${ethSuccess.length}/${this.wallets.length} berhasil`);
-
+    console.log(`   📍 USDT transfers: ${usdtSuccess.length}/${this.usdtContracts.filter(c => c).length} berhasil`);
+    console.log(`   📍 TRX transfers: ${trxSuccess.length}/${this.tronWebs.length} berhasil`);
+    
     if (successful.length > 0) {
       console.log(`🎯 TOTAL SUCCESS: ${successful.length} transaksi terkirim - DRAINER DEFEATED!`);
       return true;
@@ -333,223 +323,193 @@ class AntiTriggerDrainer {
       return false;
     }
   }
-
-  // Transfer TRN normal (ketika tidak ada trigger)
-  async transferTRNNormal(amount, providerIndex = 0) {
+  
+  // Transfer USDT normal (ketika tidak ada trigger)
+  async transferUSDTNormal(amount, rpcIndex = 0) {
     try {
-      const wallet = this.wallets[providerIndex];
-      const contract = this.trnContracts[providerIndex];
-
-      const feeData = await this.providers[providerIndex].getFeeData();
-      const normalMultiplier = BigInt(process.env.NORMAL_GAS_MULTIPLIER || '300');
-      const gasPrice = feeData.gasPrice * normalMultiplier / 100n;
-
-      const nonce = await this.getNonce();
-
-      const tx = await contract.transfer(this.destinationWallet, amount, {
-        gasLimit: 100000n,
-        gasPrice: gasPrice,
-        nonce: nonce
+      if (!this.usdtContracts[rpcIndex]) {
+        console.log(`⚠️ USDT contract not available for RPC ${rpcIndex}`);
+        return false;
+      }
+      
+      const contract = this.usdtContracts[rpcIndex];
+      
+      const tx = await contract.transfer(
+        this.destinationWallet,
+        amount.toString()
+      ).send({
+        feeLimit: this.normalFeeLimit,
+        shouldPollResponse: false
       });
-
-      console.log(`📤 TRN TX: ${tx.hash}`);
+      
+      console.log(`📤 USDT TX: ${tx}`);
       return true;
-
+      
     } catch (error) {
-      console.error(`❌ TRN error: ${error.message}`);
+      console.error(`❌ USDT error: ${error.message}`);
       return false;
     }
   }
-
-  // Transfer ETH (hanya jika tidak ada TRN lagi)
-  async transferETH(providerIndex = 0) {
+  
+  // Transfer TRX (setelah USDT habis)
+  async transferTRX(rpcIndex = 0) {
     try {
-      const provider = this.providers[providerIndex];
-      const wallet = this.wallets[providerIndex];
-
-      const balance = await provider.getBalance(this.wallet.address);
-
-      if (balance === 0n) {
-        console.log(`💰 ETH balance is 0, skipping transfer`);
+      const tronWeb = this.tronWebs[rpcIndex];
+      const balance = await tronWeb.trx.getBalance(tronWeb.defaultAddress.base58);
+      
+      if (balance === 0) {
+        console.log(`💰 TRX balance is 0, skipping transfer`);
         return false;
       }
-
-      // Get current gas price dari network
-      const feeData = await provider.getFeeData();
-      let gasPrice = feeData.gasPrice;
-
-      // Jika gas price null, gunakan fallback
-      if (!gasPrice) {
-        gasPrice = ethers.parseUnits('0.1', 'gwei'); // fallback 0.1 gwei
-      }
-
-      // Tambah multiplier hanya jika emergency mode
-      if (this.isEmergencyMode) {
-        const emergencyMultiplier = BigInt(process.env.EMERGENCY_GAS_MULTIPLIER || '500');
-        gasPrice = gasPrice * emergencyMultiplier / 100n;
-      } else {
-        // Normal mode gunakan gas price standar + sedikit buffer
-        gasPrice = gasPrice * 110n / 100n; // +10% buffer
-      }
-
-      const gasLimit = 21000n;
-      const gasCost = gasLimit * gasPrice;
-
-      // Cek apakah balance cukup untuk gas + minimal transfer
-      const minTransferAmount = ethers.parseUnits('0.000001', 'ether'); // minimal 0.000001 ETH untuk transfer
-      const totalRequired = gasCost + minTransferAmount;
-
-      if (balance <= totalRequired) {
-        console.log(`⚠️ Balance ${ethers.formatEther(balance)} ETH tidak cukup untuk gas ${ethers.formatEther(gasCost)} ETH`);
+      
+      // Reserve untuk fee (minimal 2 TRX untuk safety)
+      const feeReserve = 2000000; // 2 TRX
+      const minTransferAmount = 1000000; // minimal 1 TRX untuk transfer
+      
+      if (balance <= feeReserve + minTransferAmount) {
+        console.log(`⚠️ Balance ${this.sunToTrx(balance)} TRX tidak cukup untuk transfer (butuh min ${this.sunToTrx(feeReserve + minTransferAmount)} TRX)`);
         return false;
       }
-
-      const amountToSend = balance - gasCost;
-      const nonce = await this.getNonce();
-
-      console.log(`💰 Transferring ${ethers.formatEther(amountToSend)} ETH with gas ${ethers.formatEther(gasCost)} ETH`);
-
-      const tx = await wallet.sendTransaction({
-        to: this.destinationWallet,
-        value: amountToSend,
-        gasLimit: gasLimit,
-        gasPrice: gasPrice,
-        nonce: nonce
-      });
-
-      console.log(`📤 ETH TX: ${tx.hash}`);
+      
+      const amountToSend = balance - feeReserve;
+      
+      console.log(`💰 Transferring ${this.sunToTrx(amountToSend)} TRX (reserve ${this.sunToTrx(feeReserve)} TRX untuk fee)`);
+      
+      const tx = await tronWeb.trx.sendTransaction(this.destinationWallet, amountToSend);
+      
+      console.log(`📤 TRX TX: ${tx.txid || tx.transaction?.txID}`);
       return true;
-
+      
     } catch (error) {
-      console.error(`❌ ETH error: ${error.message}`);
-
-      // Jika gas too low, skip transfer dan tunggu gas price turun
-      if (error.message.includes('intrinsic gas too low') || error.message.includes('gas too low')) {
-        console.log(`⚠️ Gas price terlalu tinggi, menunggu gas price turun...`);
-        return false;
-      }
-
+      console.error(`❌ TRX error: ${error.message}`);
       return false;
     }
   }
-
+  
   // Get balances dengan tracking untuk deteksi trigger
   async getBalancesWithTriggerDetection() {
     try {
-      const promises = this.providers.map(async (provider, i) => {
+      const promises = this.tronWebs.map(async (tronWeb, i) => {
         try {
-          const [ethBalance, trnBalance] = await Promise.all([
-            provider.getBalance(this.wallet.address),
-            this.trnContracts[i].balanceOf(this.wallet.address)
-          ]);
-          return { eth: ethBalance, trn: trnBalance, providerIndex: i };
+          const address = tronWeb.defaultAddress.base58;
+          
+          // Get TRX balance
+          const trxBalance = BigInt(await tronWeb.trx.getBalance(address));
+          
+          // Get USDT balance
+          let usdtBalance = 0n;
+          if (this.usdtContracts[i]) {
+            try {
+              const balance = await this.usdtContracts[i].balanceOf(address).call();
+              usdtBalance = BigInt(balance.toString());
+            } catch (err) {
+              // USDT balance gagal, gunakan 0
+            }
+          }
+          
+          return { trx: trxBalance, usdt: usdtBalance, rpcIndex: i };
         } catch (error) {
           return null;
         }
       });
-
+      
       const results = await Promise.allSettled(promises);
       const validResult = results.find(r => r.status === 'fulfilled' && r.value !== null);
-
+      
       if (!validResult) {
         throw new Error('Semua provider gagal');
       }
-
-      const { eth, trn, providerIndex } = validResult.value;
-
+      
+      const { trx, usdt, rpcIndex } = validResult.value;
+      
       // Deteksi trigger berdasarkan perubahan balance
-      if (this.lastETHBalance !== null && this.lastTRNBalance !== null) {
-        this.detectTrigger(eth, trn);
+      if (this.lastTRXBalance !== null && this.lastUSDTBalance !== null) {
+        this.detectTrigger(trx, usdt);
       }
-
+      
       // Update last balances
-      this.lastETHBalance = eth;
-      this.lastTRNBalance = trn;
-
-      return { eth, trn, providerIndex };
-
+      this.lastTRXBalance = trx;
+      this.lastUSDTBalance = usdt;
+      
+      return { trx, usdt, rpcIndex };
+      
     } catch (error) {
       throw new Error('Gagal mendapatkan balance');
     }
   }
-
+  
   // Main execution logic
-  async executeAntiTriggerTransfer() {
+  async executeAntiDrainerTransfer() {
     try {
       // PRIORITAS PERTAMA: Cek transaksi dari drainer
       const drainerDetected = await this.checkForDrainerTransactions();
-
+      
       const balances = await this.getBalancesWithTriggerDetection();
-
-      const ethFormatted = ethers.formatEther(balances.eth);
-      const trnFormatted = ethers.formatUnits(balances.trn, 18);
-
+      
+      const trxFormatted = this.sunToTrx(balances.trx);
+      const usdtFormatted = Number(balances.usdt) / 1000000; // USDT has 6 decimals
+      
       // Cek minimum balance untuk avoid spam logs
-      const minETHToShow = ethers.parseUnits('0.000005', 'ether'); // minimal 0.000005 ETH untuk ditampilkan
-      const shouldShowBalance = balances.trn > 0n || balances.eth >= minETHToShow;
-
+      const minTRXToShow = 100000n; // minimal 0.1 TRX
+      const shouldShowBalance = balances.usdt > 0n || balances.trx >= minTRXToShow;
+      
       // Jika ada balance yang signifikan, tampilkan
       if (shouldShowBalance) {
         const prefix = this.isEmergencyMode ? '🚨' : '💰';
-        console.log(`${prefix} ETH: ${ethFormatted} | TRN: ${trnFormatted}`);
+        console.log(`${prefix} TRX: ${trxFormatted.toFixed(6)} | USDT: ${usdtFormatted.toFixed(2)}`);
       }
-
-      // STRATEGI BARU: Transfer TRN + ETH bersamaan jika ada trigger/emergency
+      
+      // STRATEGI: Transfer USDT + TRX bersamaan jika ada trigger/emergency
       if (this.triggerDetected || this.isEmergencyMode || drainerDetected) {
         console.log(`🚨 TRIGGER/EMERGENCY DETECTED - LAUNCHING SIMULTANEOUS TRANSFERS!`);
-
+        
         // Emergency mode - transfer SEMUA aset secara bersamaan
-        await this.emergencyTransferAll(balances.trn, balances.eth);
-
+        await this.emergencyTransferAll(balances.usdt, balances.trx);
+        
         // Reset flags
         this.triggerDetected = false;
         this.isEmergencyMode = false;
       }
       // Mode normal - transfer satu per satu
       else {
-        // PRIORITAS UTAMA: Transfer TRN dulu
-        if (balances.trn > 0n) {
-          await this.transferTRNNormal(balances.trn, balances.providerIndex);
+        // PRIORITAS UTAMA: Transfer USDT dulu
+        if (balances.usdt > 0n) {
+          await this.transferUSDTNormal(balances.usdt, balances.rpcIndex);
         }
-        // PRIORITAS KEDUA: Transfer ETH (hanya jika TRN sudah habis dan ETH cukup)
-        else if (balances.eth > 0n) {
-          const minETHForTransfer = ethers.parseUnits('0.000006', 'ether');
-
-          if (balances.eth >= minETHForTransfer) {
-            await this.transferETH(balances.providerIndex);
+        // PRIORITAS KEDUA: Transfer TRX (hanya jika USDT sudah habis)
+        else if (balances.trx > 0n) {
+          const minTRXForTransfer = 3000000n; // 3 TRX (1 untuk transfer + 2 untuk fee)
+          
+          if (balances.trx >= minTRXForTransfer) {
+            await this.transferTRX(balances.rpcIndex);
           } else if (shouldShowBalance) {
-            console.log(`⚠️ ETH balance terlalu kecil untuk transfer (butuh min 0.000006 ETH untuk gas di Arbitrum)`);
+            console.log(`⚠️ TRX balance terlalu kecil untuk transfer (butuh min 3 TRX)`);
           }
         }
       }
-
+      
     } catch (error) {
       console.error('❌ Execute error:', error.message);
     }
   }
-
+  
   // Monitoring dengan deteksi trigger
-  async startAntiTriggerMonitoring() {
-    // Pastikan RPC dan wallet sudah siap sebelum monitoring
-    if (!this.wallet || this.providers.length === 0) {
-      console.log('⚠️ Waiting for RPC setup to complete...');
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      if (!this.wallet || this.providers.length === 0) {
-        throw new Error('RPC setup failed - cannot start monitoring');
-      }
-    }
-
-    console.log('🛡️ ANTI-TRIGGER MONITORING DIMULAI!\n');
+  async startAntiDrainerMonitoring() {
+    console.log('🛡️ ANTI-DRAINER TRON MONITORING DIMULAI!\n');
     console.log('📋 Strategi:');
     console.log('   1. Monitor transaksi masuk dengan whitelist protection');
-    console.log('   2. Deteksi trigger ETH kecil (~0.00001 ETH)');
+    console.log('   2. Deteksi trigger TRX kecil (default ~0.1 TRX)');
     console.log('   3. Emergency mode jika trigger terdeteksi');
-    console.log('   4. Transfer TRN + ETH BERSAMAAN saat emergency');
+    console.log('   4. Transfer USDT + TRX BERSAMAAN saat emergency');
     console.log('   5. Multi-RPC paralel untuk kecepatan maksimal');
-    console.log(`   6. Official TRN sender (WHITELIST): ${this.officialTRNSender}`);
-    console.log(`   7. Known drainer addresses: ${this.drainerAddresses.join(', ')}\n`);
-
+    if (this.officialSender) {
+      console.log(`   6. Official sender (WHITELIST): ${this.officialSender}`);
+    }
+    if (this.drainerAddresses.length > 0) {
+      console.log(`   7. Known drainer addresses: ${this.drainerAddresses.join(', ')}`);
+    }
+    console.log('');
+    
     // Get initial balances dengan retry
     let retryCount = 0;
     while (retryCount < 3) {
@@ -565,14 +525,14 @@ class AntiTriggerDrainer {
         }
       }
     }
-
+    
     // Transfer pertama jika ada balance
-    await this.executeAntiTriggerTransfer();
-
-    // Monitoring dengan interval yang sangat cepat untuk beat drainer
-    const monitoringInterval = parseInt(process.env.MONITORING_INTERVAL_MS) || 800; // 0.8 detik - lebih agresif!
+    await this.executeAntiDrainerTransfer();
+    
+    // Monitoring dengan interval
+    const monitoringInterval = parseInt(process.env.MONITORING_INTERVAL_MS) || 1000; // 1 detik
     setInterval(async () => {
-      await this.executeAntiTriggerTransfer();
+      await this.executeAntiDrainerTransfer();
     }, monitoringInterval);
   }
 }
@@ -580,77 +540,35 @@ class AntiTriggerDrainer {
 function validateEnv() {
   const requiredVars = ['PRIVATE_KEY', 'DESTINATION_WALLET'];
   const missingVars = requiredVars.filter(varName => !process.env[varName]);
-
+  
   if (missingVars.length > 0) {
     console.error(`❌ Missing required .env variables: ${missingVars.join(', ')}`);
     console.error('❌ Please check your .env file');
+    console.error('💡 Copy .env.example to .env and fill in your values');
     process.exit(1);
   }
-
-  if (!ethers.isAddress(process.env.DESTINATION_WALLET)) {
-    console.error('❌ DESTINATION_WALLET is not a valid address');
-    process.exit(1);
-  }
-
-  // Validate drainer addresses if provided
-  const drainerAddresses = [process.env.DRAINER_ADDRESS_1, process.env.DRAINER_ADDRESS_2];
-  for (const addr of drainerAddresses) {
-    if (addr && !ethers.isAddress(addr)) {
-      console.error(`❌ Invalid drainer address: ${addr}`);
-      process.exit(1);
-    }
-  }
-
-  // Validate official TRN sender if provided  
-  if (process.env.OFFICIAL_TRN_SENDER && !ethers.isAddress(process.env.OFFICIAL_TRN_SENDER)) {
-    console.error(`❌ Invalid OFFICIAL_TRN_SENDER address: ${process.env.OFFICIAL_TRN_SENDER}`);
-    process.exit(1);
-  }
-
+  
   console.log('✅ Environment variables validated');
 }
 
 async function main() {
-  console.log('🛡️🛡️🛡️ ANTI-TRIGGER DRAINER MODE 🛡️🛡️🛡️\n');
-  console.log('🎯 Target: Counter attack drainer dari alamat terdeteksi');
-  console.log('⚡ Emergency Gas: 1000% dari normal saat trigger detected');
-  console.log('🚀 Multi-RPC: Transfer paralel ke semua RPC sekaligus');
-  console.log('⏱️ Monitoring: Setiap 2 detik + transaction monitoring');
-  console.log('🔍 Drainer Watch: 0x504c...023 & 0x1171...8c5');
-  console.log('💎 NEW: Transfer TRN + ETH bersamaan saat emergency!\n');
-
+  console.log('🛡️🛡️🛡️ ANTI-DRAINER TRON MODE 🛡️🛡️🛡️\n');
+  console.log('🎯 Target: Protect TRON wallet dari drainer attacks');
+  console.log('⚡ Emergency Mode: Multi-RPC parallel transfers saat trigger detected');
+  console.log('🚀 Assets: TRX + USDT (TRC20)');
+  console.log('⏱️ Monitoring: Real-time balance & transaction monitoring\n');
+  
   validateEnv();
-
-  const antiTrigger = new AntiTriggerDrainer();
-
-  // Tunggu sampai RPC setup selesai
-  console.log('⏳ Initializing RPC connections and wallets...\n');
-
-  await antiTrigger.startAntiTriggerMonitoring();
+  
+  const antiDrainer = new AntiDrainerTron();
+  
+  try {
+    await antiDrainer.setupTronWeb();
+    await antiDrainer.startAntiDrainerMonitoring();
+  } catch (error) {
+    console.error('❌ Fatal error:', error.message);
+    process.exit(1);
+  }
 }
 
-// Handle errors tapi jangan stop
-process.on('SIGINT', () => {
-  console.log('\n🛑 ANTI-TRIGGER MODE DIHENTIKAN');
-  process.exit(0);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('❌ Fatal Error:', error.message);
-  console.log('🔄 Continuing...');
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('❌ Promise Rejection:', reason);
-  console.log('🔄 Continuing...');
-});
-
-if (require.main === module) {
-  main().catch(error => {
-    console.error('❌ Main Error:', error.message);
-    console.log('🔄 Restarting in 2 seconds...');
-    setTimeout(() => {
-      main();
-    }, 2000);
-  });
-}
+main();
