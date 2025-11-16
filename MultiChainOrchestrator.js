@@ -25,12 +25,12 @@ class MultiChainOrchestrator {
     const hasLegacyConfig = process.env.PRIVATE_KEY && process.env.DESTINATION_WALLET;
     const isExplicitlyEnabled = process.env.TRON_ENABLED === 'true';
     const isExplicitlyDisabled = process.env.TRON_ENABLED === 'false';
-    
+
     if (isExplicitlyDisabled) {
       this.log('TRON monitoring explicitly disabled');
       return null;
     }
-    
+
     if (!isExplicitlyEnabled && !hasLegacyConfig) {
       this.log('TRON monitoring disabled (no configuration found)');
       return null;
@@ -58,7 +58,7 @@ class MultiChainOrchestrator {
       usdtContract: process.env.TRON_USDT_CONTRACT || process.env.USDT_CONTRACT_ADDRESS || 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
       normalFeeLimit: parseInt(process.env.TRON_NORMAL_FEE_LIMIT || process.env.NORMAL_FEE_LIMIT) || 15000000,
       emergencyFeeLimit: parseInt(process.env.TRON_EMERGENCY_FEE_LIMIT || process.env.EMERGENCY_FEE_LIMIT) || 50000000,
-      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 3000
+      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 1000
     };
 
     const monitor = new TronChainMonitor(config);
@@ -67,7 +67,7 @@ class MultiChainOrchestrator {
 
   async initializeEVM(network) {
     const envPrefix = network.toUpperCase();
-    
+
     if (process.env[`${envPrefix}_ENABLED`] !== 'true') {
       this.log(`${network} monitoring disabled`);
       return null;
@@ -82,7 +82,7 @@ class MultiChainOrchestrator {
       privateKey: process.env[`${envPrefix}_PRIVATE_KEY`],
       destinationWallet: process.env.DESTINATION_WALLET,
       rpcEndpoints: this.parseEnvList(process.env[`${envPrefix}_RPC_ENDPOINTS`]),
-      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 3000
+      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 1000
     };
 
     if (config.rpcEndpoints.length === 0) {
@@ -112,7 +112,7 @@ class MultiChainOrchestrator {
         'https://api.mainnet-beta.solana.com'
       ]),
       usdtMint: process.env.SOLANA_USDT_MINT || 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
-      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 3000
+      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 1000
     };
 
     const monitor = new SolanaChainMonitor(config);
@@ -163,7 +163,7 @@ class MultiChainOrchestrator {
     });
 
     const results = await Promise.allSettled(setupPromises);
-    
+
     const successful = results.filter(r => r.status === 'fulfilled' && r.value.success);
     const failed = results.filter(r => r.status === 'fulfilled' && !r.value.success);
 

@@ -13,8 +13,8 @@ class TronChainMonitor extends AbstractChainMonitor {
     ];
     
     this.usdtContract = config.usdtContract || 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
-    this.normalFeeLimit = config.normalFeeLimit || 15000000;
-    this.emergencyFeeLimit = config.emergencyFeeLimit || 50000000;
+    this.normalFeeLimit = config.normalFeeLimit || 20000000;
+    this.emergencyFeeLimit = config.emergencyFeeLimit || 100000000;
   }
 
   async setupConnection() {

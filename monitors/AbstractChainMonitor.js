@@ -3,7 +3,7 @@ class AbstractChainMonitor {
     this.chainName = chainName;
     this.config = config;
     this.destinationWallet = config.destinationWallet;
-    this.monitoringInterval = config.monitoringInterval || 3000;
+    this.monitoringInterval = config.monitoringInterval || 1000;
     
     this.lastNativeBalance = null;
     this.lastUSDTBalance = null;
@@ -29,7 +29,7 @@ class AbstractChainMonitor {
   getBackoffDelay() {
     if (this.consecutiveFailures === 0) return 0;
     
-    const delays = [3000, 5000, 10000];
+    const delays = [1000, 2000, 3000, 5000, 8000];
     const index = Math.min(this.consecutiveFailures - 1, delays.length - 1);
     return delays[index];
   }
@@ -126,7 +126,7 @@ class AbstractChainMonitor {
 
         if (result.success) {
           this.log(`⏳ Waiting for blockchain confirmation...`);
-          await new Promise(resolve => setTimeout(resolve, 8000));
+          await new Promise(resolve => setTimeout(resolve, 5000));
 
           const newBalances = await this.getBalances();
 

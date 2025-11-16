@@ -63,8 +63,12 @@ class EVMChainMonitor extends AbstractChainMonitor {
     
     for (let i = 0; i < this.rpcEndpoints.length; i++) {
       try {
-        const provider = new ethers.JsonRpcProvider(this.rpcEndpoints[i], undefined, {
-          staticNetwork: true
+        const provider = new ethers.JsonRpcProvider(this.rpcEndpoints[i], {
+          chainId: this.chainInfo.chainId,
+          name: this.chainInfo.name
+        }, {
+          staticNetwork: true,
+          batchMaxCount: 1
         });
         
         await Promise.race([
