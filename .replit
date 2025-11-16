@@ -1,4 +1,4 @@
-modules = ["nodejs-20"]
+modules = ["nodejs-18"]
 [agent]
 expertMode = true
 
@@ -22,9 +22,9 @@ args = "anti-drainer-monitor"
 name = "anti-drainer-monitor"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "node index.js"
-
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm start"
