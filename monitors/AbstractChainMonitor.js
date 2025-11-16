@@ -32,7 +32,7 @@ class AbstractChainMonitor {
   getBackoffDelay() {
     if (this.consecutiveFailures === 0) return 0;
     
-    const delays = [500, 1000, 2000, 3000, 5000];
+    const delays = [2000, 5000, 10000, 15000, 30000];
     const index = Math.min(this.consecutiveFailures - 1, delays.length - 1);
     return delays[index];
   }
@@ -153,6 +153,15 @@ class AbstractChainMonitor {
         const result = await this.executeTransfer(balances.native, balances.usdt, balances.extraTokens);
 
         this.transferInProgress = false;
+
+        if (result.insufficientFunds) {
+          this.log(`\n🚨🚨🚨 INSUFFICIENT FUNDS DETECTED! 🚨🚨🚨`);
+          this.log(`❌ Wallet has tokens but NO native currency for gas fees!`);
+          this.log(`💡 Please deposit native currency (ETH/TRX/SOL) to wallet: ${this.wallet?.address || 'N/A'}`);
+          this.log(`⏸️ Pausing monitoring to avoid spam...\n`);
+          this.stopMonitoring();
+          return;
+        }
 
         if (result.success) {
           this.log(`⏳ Waiting for blockchain confirmation...`);

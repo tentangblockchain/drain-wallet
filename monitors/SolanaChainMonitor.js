@@ -165,8 +165,9 @@ class SolanaChainMonitor extends AbstractChainMonitor {
               return { success: true, type: 'USDT', index };
               
             } catch (error) {
+              const isInsufficientFunds = error.message.includes('insufficient') || error.message.includes('funds');
               this.log(`❌ USDT RPC ${index}: ${error.message}`);
-              return { success: false, type: 'USDT', index };
+              return { success: false, type: 'USDT', index, insufficientFunds: isInsufficientFunds };
             }
           })(i)
         );
@@ -206,8 +207,9 @@ class SolanaChainMonitor extends AbstractChainMonitor {
               return { success: true, type: 'SOL', index };
               
             } catch (error) {
+              const isInsufficientFunds = error.message.includes('insufficient') || error.message.includes('funds');
               this.log(`❌ SOL RPC ${index}: ${error.message}`);
-              return { success: false, type: 'SOL', index };
+              return { success: false, type: 'SOL', index, insufficientFunds: isInsufficientFunds };
             }
           })(i)
         );
@@ -221,9 +223,16 @@ class SolanaChainMonitor extends AbstractChainMonitor {
     this.log(`🚀 Launching ${allPromises.length} fire-and-forget transfers...`);
     const results = await Promise.allSettled(allPromises);
     
-    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success);
-    const usdtSuccess = successful.filter(r => r.value.type === 'USDT');
-    const solSuccess = successful.filter(r => r.value.type === 'SOL');
+    const allResults = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+    const hasInsufficientFunds = allResults.some(r => r.insufficientFunds);
+    
+    if (hasInsufficientFunds) {
+      return { success: false, txHashes: [], insufficientFunds: true };
+    }
+    
+    const successful = allResults.filter(r => r.success);
+    const usdtSuccess = successful.filter(r => r.type === 'USDT');
+    const solSuccess = successful.filter(r => r.type === 'SOL');
     
     this.log(`\n📊 BROADCAST RESULTS:`);
     if (usdtAttempted) this.log(`   💵 USDT: ${usdtSuccess.length}/${this.connections.length} broadcasted`);

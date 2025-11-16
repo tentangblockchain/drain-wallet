@@ -189,9 +189,13 @@ class TronChainMonitor extends AbstractChainMonitor {
             }
           }
         } catch (error) {
+          const isInsufficientFunds = error.message.includes('insufficient') || error.message.includes('balance');
           this.log(`⚠️ USDT RPC ${i}: ${error.message}`);
           if (i === this.tronWebs.length - 1) {
             this.log(`❌ All RPCs failed for USDT transfer`);
+            if (isInsufficientFunds) {
+              return { success: false, txHashes, insufficientFunds: true };
+            }
           }
         }
       }
@@ -225,9 +229,13 @@ class TronChainMonitor extends AbstractChainMonitor {
             }
           }
         } catch (error) {
+          const isInsufficientFunds = error.message.includes('insufficient') || error.message.includes('balance');
           this.log(`⚠️ TRX RPC ${i}: ${error.message}`);
           if (i === this.tronWebs.length - 1) {
             this.log(`❌ All RPCs failed for TRX transfer`);
+            if (isInsufficientFunds) {
+              return { success: false, txHashes, insufficientFunds: true };
+            }
           }
         }
       }
