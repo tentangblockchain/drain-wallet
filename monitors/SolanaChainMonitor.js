@@ -23,22 +23,34 @@ class SolanaChainMonitor extends AbstractChainMonitor {
     const privateKeyArray = this.parsePrivateKey(this.config.privateKey);
     this.keypair = Keypair.fromSecretKey(privateKeyArray);
     
-    for (let i = 0; i < this.rpcEndpoints.length; i++) {
+    const testPromises = this.rpcEndpoints.map(async (endpoint, i) => {
       try {
-        const connection = new Connection(this.rpcEndpoints[i], 'confirmed');
+        const connection = new Connection(endpoint, 'confirmed');
         
         await Promise.race([
           connection.getBlockHeight(),
           new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
         ]);
         
-        this.connections.push(connection);
-        this.log(`✅ RPC ${i} connected: ${this.rpcEndpoints[i]}`);
-        
+        return { success: true, connection, index: i, endpoint };
       } catch (error) {
-        this.log(`❌ RPC ${i} failed: ${this.rpcEndpoints[i]}`);
+        return { success: false, index: i, endpoint, error: error.message };
       }
-    }
+    });
+    
+    const results = await Promise.allSettled(testPromises);
+    
+    results.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        const { success, connection, index, endpoint, error } = result.value;
+        if (success) {
+          this.connections.push(connection);
+          this.log(`✅ RPC ${index} connected: ${endpoint}`);
+        } else {
+          this.log(`❌ RPC ${index} failed: ${endpoint}`);
+        }
+      }
+    });
     
     if (this.connections.length === 0) {
       throw new Error('❌ All Solana RPC endpoints failed!');

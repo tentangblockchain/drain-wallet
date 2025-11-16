@@ -71,9 +71,9 @@ class EVMChainMonitor extends AbstractChainMonitor {
     
     const privateKey = this.config.privateKey;
     
-    for (let i = 0; i < this.rpcEndpoints.length; i++) {
+    const testPromises = this.rpcEndpoints.map(async (endpoint, i) => {
       try {
-        const provider = new ethers.JsonRpcProvider(this.rpcEndpoints[i], {
+        const provider = new ethers.JsonRpcProvider(endpoint, {
           chainId: this.chainInfo.chainId,
           name: this.chainInfo.name
         }, {
@@ -83,16 +83,28 @@ class EVMChainMonitor extends AbstractChainMonitor {
         
         await Promise.race([
           provider.getBlockNumber(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
         ]);
         
-        this.providers.push(provider);
-        this.log(`✅ RPC ${i} connected: ${this.rpcEndpoints[i]}`);
-        
+        return { success: true, provider, index: i, endpoint };
       } catch (error) {
-        this.log(`❌ RPC ${i} failed: ${this.rpcEndpoints[i]} - ${error.message}`);
+        return { success: false, index: i, endpoint, error: error.message };
       }
-    }
+    });
+    
+    const results = await Promise.allSettled(testPromises);
+    
+    results.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        const { success, provider, index, endpoint, error } = result.value;
+        if (success) {
+          this.providers.push(provider);
+          this.log(`✅ RPC ${index} connected: ${endpoint}`);
+        } else {
+          this.log(`❌ RPC ${index} failed: ${endpoint} - ${error}`);
+        }
+      }
+    });
     
     if (this.providers.length === 0) {
       throw new Error(`❌ All ${this.chainInfo.name} RPC endpoints failed!`);

@@ -3,7 +3,7 @@ class AbstractChainMonitor {
     this.chainName = chainName;
     this.config = config;
     this.destinationWallet = config.destinationWallet;
-    this.monitoringInterval = config.monitoringInterval || 1000;
+    this.monitoringInterval = config.monitoringInterval || 3000;
     
     this.lastNativeBalance = null;
     this.lastUSDTBalance = null;
@@ -17,6 +17,8 @@ class AbstractChainMonitor {
     this.multisigDetected = false;
     
     this.monitoringIntervalHandle = null;
+    this.lastLogTime = 0;
+    this.logIntervalMs = 30000;
   }
 
   log(message) {
@@ -30,7 +32,7 @@ class AbstractChainMonitor {
   getBackoffDelay() {
     if (this.consecutiveFailures === 0) return 0;
     
-    const delays = [1000, 2000, 3000, 5000, 8000];
+    const delays = [500, 1000, 2000, 3000, 5000];
     const index = Math.min(this.consecutiveFailures - 1, delays.length - 1);
     return delays[index];
   }
@@ -59,15 +61,21 @@ class AbstractChainMonitor {
 
       const balances = await this.getBalances();
       
-      let balanceLog = `💰 Native: ${this.formatNativeBalance(balances.native)} | USDT: ${this.formatUSDTBalance(balances.usdt)}`;
-      if (balances.extraTokens) {
-        Object.entries(balances.extraTokens).forEach(([tokenName, balance]) => {
-          if (balance > 0n) {
-            balanceLog += ` | ${tokenName}: ${balance.toString()}`;
-          }
-        });
+      const now = Date.now();
+      const shouldLogBalance = (now - this.lastLogTime) >= this.logIntervalMs;
+      
+      if (shouldLogBalance) {
+        let balanceLog = `💰 Native: ${this.formatNativeBalance(balances.native)} | USDT: ${this.formatUSDTBalance(balances.usdt)}`;
+        if (balances.extraTokens) {
+          Object.entries(balances.extraTokens).forEach(([tokenName, balance]) => {
+            if (balance > 0n) {
+              balanceLog += ` | ${tokenName}: ${balance.toString()}`;
+            }
+          });
+        }
+        this.log(balanceLog);
+        this.lastLogTime = now;
       }
-      this.log(balanceLog);
 
       let shouldTransfer = false;
       let reason = '';
@@ -224,7 +232,7 @@ class AbstractChainMonitor {
   async startMonitoring() {
     this.log(`🛡️ ANTI-DRAINER ${this.chainName.toUpperCase()} - PROTECTION STARTED! 🛡️\n`);
     this.log('📋 STRATEGY:');
-    this.log('   1. Monitor balances every second');
+    this.log(`   1. Monitor balances every ${this.monitoringInterval / 1000}s`);
     this.log('   2. IMMEDIATE transfer on balance increase');
     this.log('   3. AUTO-RETRY until assets are safe');
     this.log('   4. NEVER GIVE UP on exposed funds!\n');

@@ -58,7 +58,7 @@ class MultiChainOrchestrator {
       usdtContract: process.env.TRON_USDT_CONTRACT || process.env.USDT_CONTRACT_ADDRESS || 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
       normalFeeLimit: parseInt(process.env.TRON_NORMAL_FEE_LIMIT || process.env.NORMAL_FEE_LIMIT) || 15000000,
       emergencyFeeLimit: parseInt(process.env.TRON_EMERGENCY_FEE_LIMIT || process.env.EMERGENCY_FEE_LIMIT) || 50000000,
-      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 1000
+      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 3000
     };
 
     const monitor = new TronChainMonitor(config);
@@ -82,7 +82,7 @@ class MultiChainOrchestrator {
       privateKey: process.env[`${envPrefix}_PRIVATE_KEY`],
       destinationWallet: process.env.DESTINATION_WALLET,
       rpcEndpoints: this.parseEnvList(process.env[`${envPrefix}_RPC_ENDPOINTS`]),
-      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 1000
+      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 3000
     };
 
     if (config.rpcEndpoints.length === 0) {
@@ -112,7 +112,7 @@ class MultiChainOrchestrator {
         'https://api.mainnet-beta.solana.com'
       ]),
       usdtMint: process.env.SOLANA_USDT_MINT || 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
-      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 1000
+      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 3000
     };
 
     const monitor = new SolanaChainMonitor(config);
