@@ -63,18 +63,20 @@ class EVMChainMonitor extends AbstractChainMonitor {
     
     for (let i = 0; i < this.rpcEndpoints.length; i++) {
       try {
-        const provider = new ethers.JsonRpcProvider(this.rpcEndpoints[i]);
+        const provider = new ethers.JsonRpcProvider(this.rpcEndpoints[i], undefined, {
+          staticNetwork: true
+        });
         
         await Promise.race([
           provider.getBlockNumber(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
         ]);
         
         this.providers.push(provider);
         this.log(`✅ RPC ${i} connected: ${this.rpcEndpoints[i]}`);
         
       } catch (error) {
-        this.log(`❌ RPC ${i} failed: ${this.rpcEndpoints[i]}`);
+        this.log(`❌ RPC ${i} failed: ${this.rpcEndpoints[i]} - ${error.message}`);
       }
     }
     

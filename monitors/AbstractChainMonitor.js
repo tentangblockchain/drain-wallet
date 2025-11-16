@@ -3,14 +3,14 @@ class AbstractChainMonitor {
     this.chainName = chainName;
     this.config = config;
     this.destinationWallet = config.destinationWallet;
-    this.monitoringInterval = config.monitoringInterval || 1000;
+    this.monitoringInterval = config.monitoringInterval || 3000;
     
     this.lastNativeBalance = null;
     this.lastUSDTBalance = null;
     this.transferInProgress = false;
     
     this.consecutiveFailures = 0;
-    this.maxConsecutiveFailures = 5;
+    this.maxConsecutiveFailures = 3;
     this.lastTransferAttemptTime = null;
     this.broadcastedTxHashes = new Set();
     this.multisigDetected = false;
@@ -29,7 +29,7 @@ class AbstractChainMonitor {
   getBackoffDelay() {
     if (this.consecutiveFailures === 0) return 0;
     
-    const delays = [5000, 10000, 20000, 40000, 60000];
+    const delays = [3000, 5000, 10000];
     const index = Math.min(this.consecutiveFailures - 1, delays.length - 1);
     return delays[index];
   }
@@ -97,7 +97,7 @@ class AbstractChainMonitor {
           }
         }
 
-        if (this.consecutiveFailures === 3 && !this.multisigDetected) {
+        if (this.consecutiveFailures === 2 && !this.multisigDetected) {
           this.log(`🔍 Checking for multisig configuration...`);
           this.multisigDetected = await this.checkMultisig();
 
@@ -126,7 +126,7 @@ class AbstractChainMonitor {
 
         if (result.success) {
           this.log(`⏳ Waiting for blockchain confirmation...`);
-          await new Promise(resolve => setTimeout(resolve, 5000));
+          await new Promise(resolve => setTimeout(resolve, 8000));
 
           const newBalances = await this.getBalances();
 
