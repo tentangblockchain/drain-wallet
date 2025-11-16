@@ -73,13 +73,25 @@ class EVMChainMonitor extends AbstractChainMonitor {
 
     const testPromises = this.rpcEndpoints.map(async (endpoint, i) => {
       try {
-        const provider = new ethers.JsonRpcProvider(endpoint, {
-          chainId: this.chainInfo.chainId,
-          name: this.chainInfo.name
-        }, {
-          staticNetwork: true,
-          batchMaxCount: 1
-        });
+        let provider;
+        
+        // Detect WebSocket vs HTTP endpoint
+        if (endpoint.startsWith('wss://') || endpoint.startsWith('ws://')) {
+          provider = new ethers.WebSocketProvider(endpoint, {
+            chainId: this.chainInfo.chainId,
+            name: this.chainInfo.name
+          }, {
+            staticNetwork: true
+          });
+        } else {
+          provider = new ethers.JsonRpcProvider(endpoint, {
+            chainId: this.chainInfo.chainId,
+            name: this.chainInfo.name
+          }, {
+            staticNetwork: true,
+            batchMaxCount: 1
+          });
+        }
 
         await Promise.race([
           provider.getBlockNumber(),

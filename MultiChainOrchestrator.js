@@ -82,7 +82,7 @@ class MultiChainOrchestrator {
       privateKey: process.env[`${envPrefix}_PRIVATE_KEY`],
       destinationWallet: process.env.DESTINATION_WALLET,
       rpcEndpoints: this.parseEnvList(process.env[`${envPrefix}_RPC_ENDPOINTS`]),
-      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 5000
+      monitoringInterval: parseInt(process.env.MONITORING_INTERVAL_MS) || 3000
     };
 
     if (config.rpcEndpoints.length === 0) {

