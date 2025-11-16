@@ -1,4 +1,15 @@
+
 # Multi-Chain Anti-Drainer Wallet Protection System
+
+## ⚠️ PERINGATAN KEAMANAN KRITIS
+
+**JANGAN PERNAH GUNAKAN WALLET/PRIVATE KEY DARI `.env.example`!**
+
+- ⛔ Semua wallet dan private key di `.env.example` adalah **WALLET DRAIN** yang sengaja disertakan untuk tujuan edukasi
+- 🚨 Wallet tersebut sudah dikompromikan dan asetnya akan langsung diambil oleh attacker
+- ✅ **WAJIB** ganti semua private key dan wallet address dengan milik Anda sendiri
+- 🔐 **JANGAN PERNAH** share private key Anda ke siapapun atau commit ke Git
+- 💡 File `.env` sudah ada di `.gitignore` untuk mencegah private key ter-commit
 
 ## Overview
 Sistem perlindungan wallet multi-chain yang dirancang untuk mendeteksi dan melawan serangan drainer. Sistem ini memonitor multiple blockchain networks secara real-time dan secara otomatis mentransfer aset (native coins + USDT) ketika aktivitas mencurigakan terdeteksi.
@@ -35,8 +46,8 @@ Sistem perlindungan wallet multi-chain yang dirancang untuk mendeteksi dan melaw
 │   ├── EVMChainMonitor.js        # EVM chains implementation
 │   └── SolanaChainMonitor.js     # Solana implementation
 ├── .env                          # Your configuration (not in Git)
-├── .env.example                  # Configuration template
-└── index-tron-only.js.backup     # Original TRON-only version
+├── .env.example                  # Configuration template (JANGAN DIGUNAKAN!)
+└── replit.md                     # Documentation
 ```
 
 ## Key Features
@@ -96,22 +107,25 @@ Sistem perlindungan wallet multi-chain yang dirancang untuk mendeteksi dan melaw
 
 #### Global Settings
 ```bash
-DESTINATION_WALLET=0xYour...          # For EVM chains (Ethereum, Base, Arbitrum, Sepolia)
-DESTINATION_WALLET_TRON=TYour...      # For TRON (optional, fallback to DESTINATION_WALLET)
-DESTINATION_WALLET_SOLANA=Your...     # For Solana
-MONITORING_INTERVAL_MS=1000           # Default: 1 second
+# GANTI dengan wallet address Anda sendiri!
+DESTINATION_WALLET=0xYourWalletAddress          # For EVM chains
+DESTINATION_WALLET_TRON=TYourWalletAddress      # For TRON
+DESTINATION_WALLET_SOLANA=YourWalletAddress     # For Solana
+
+# Monitoring interval (milliseconds) - Default: 1 second
+MONITORING_INTERVAL_MS=1000
 ```
 
 #### Per-Chain Settings
 Each chain needs:
 - `{CHAIN}_ENABLED=true` - Enable the chain
-- `{CHAIN}_PRIVATE_KEY=...` - Private key for that chain
+- `{CHAIN}_PRIVATE_KEY=...` - **PRIVATE KEY ANDA SENDIRI** (bukan dari .env.example!)
 - `{CHAIN}_RPC_ENDPOINTS=...` - Comma-separated RPC URLs
 
 Example for TRON:
 ```bash
 TRON_ENABLED=true
-TRON_PRIVATE_KEY=your_private_key
+TRON_PRIVATE_KEY=your_actual_private_key_here  # GANTI INI!
 TRON_RPC_ENDPOINTS=https://api.trongrid.io,https://api.tronstack.io
 ```
 
@@ -130,18 +144,24 @@ TRON_RPC_ENDPOINTS=https://api.trongrid.io,https://api.tronstack.io
    cp .env.example .env
    ```
 
-2. **Configure chains**
-   - Set `{CHAIN}_ENABLED=true` untuk chains yang ingin dimonitor
-   - Isi private keys untuk setiap enabled chain
-   - Tambahkan RPC endpoints (recommended: multiple per chain)
-   - Set destination wallets
+2. **⚠️ CRITICAL: Ganti SEMUA private keys dan wallet addresses**
+   - Buka file `.env`
+   - Ganti `DESTINATION_WALLET` dengan wallet Anda
+   - Ganti `DESTINATION_WALLET_TRON` dengan wallet TRON Anda
+   - Ganti `DESTINATION_WALLET_SOLANA` dengan wallet Solana Anda
+   - Ganti SEMUA `{CHAIN}_PRIVATE_KEY` dengan private key Anda sendiri
+   - **JANGAN gunakan wallet/key dari `.env.example`** - itu wallet drain untuk edukasi!
 
-3. **Install dependencies**
+3. **Configure chains**
+   - Set `{CHAIN}_ENABLED=true` untuk chains yang ingin dimonitor
+   - Tambahkan RPC endpoints (recommended: multiple per chain)
+
+4. **Install dependencies**
    ```bash
    npm install
    ```
 
-4. **Run the monitor**
+5. **Run the monitor**
    ```bash
    npm start
    ```
@@ -163,6 +183,31 @@ TRON_RPC_ENDPOINTS=https://api.trongrid.io,https://api.tronstack.io
 - Failure di satu chain tidak affect chain lain
 - Separate private keys per chain (optional)
 
+### Private Key Security
+- File `.env` tidak akan ter-commit ke Git (ada di `.gitignore`)
+- Gunakan Replit Secrets untuk production deployment (opsional)
+- **NEVER** share private keys atau commit ke public repository
+
+## Known Issues & Solutions
+
+### Issue: Transfer terus gagal (seperti di logs)
+**Symptoms:**
+- `⚠️ WARNING: X transfer failures!`
+- Assets tetap ada setelah transfer
+- Broadcast success tapi transaksi tidak confirmed
+
+**Possible Causes:**
+1. **Wallet Multisig** - Wallet memerlukan multiple signatures
+2. **Insufficient Gas** - Tidak cukup native coin untuk gas fee
+3. **Wallet Drain** - Menggunakan wallet dari `.env.example` yang sudah dikompromikan
+4. **Contract Error** - USDT contract memerlukan approval terlebih dahulu
+
+**Solutions:**
+- Pastikan wallet BUKAN multisig
+- Pastikan ada cukup TRX/ETH/SOL untuk gas fees
+- **GANTI private key dengan milik Anda** jika masih pakai dari `.env.example`
+- Check transaction hash di block explorer untuk detail error
+
 ## Transaction Explorers
 
 - **TRON**: https://tronscan.org/#/transaction/{txHash}
@@ -174,7 +219,13 @@ TRON_RPC_ENDPOINTS=https://api.trongrid.io,https://api.tronstack.io
 
 ## Recent Changes
 
-### 2025-11-16: Multi-Chain Support
+### 2025-01-16: Documentation Update
+- **CRITICAL**: Added security warning about `.env.example` wallets
+- Documented known issues with transfer failures
+- Added troubleshooting section
+- Emphasized the importance of using your own wallets
+
+### 2025-01-15: Multi-Chain Support
 - **MAJOR UPDATE**: Added support untuk 5 additional chains
 - Ethereum Mainnet, Base, Arbitrum, Sepolia, Solana
 - Modular architecture dengan AbstractChainMonitor base class
@@ -187,40 +238,52 @@ TRON_RPC_ENDPOINTS=https://api.trongrid.io,https://api.tronstack.io
 - Maintained all anti-drainer protection features
 - Fire-and-forget emergency transfers untuk semua chains
 
-### 2025-11-15: TRON-Only Version
-- Initial version focusing on TRON network
-- TRX + USDT (TRC20) protection
-- Multi-RPC failover
-- Fire-and-forget emergency transfers
-
 ## User Preferences
-- Use `.env` file for configuration (not Replit Secrets)
+- Use `.env` file for configuration (not Replit Secrets by default)
 - Indonesian language untuk console output
 - Focus on asset protection dengan maximum speed
 - Multi-chain parallel monitoring
 - Modular dan extensible architecture
 
+## Educational Purpose
+
+File `.env.example` berisi wallet dan private key yang **SENGAJA SUDAH DIKOMPROMIKAN** untuk menunjukkan:
+- Bagaimana drainer bekerja
+- Pentingnya mengamankan private key
+- Konsekuensi dari menggunakan wallet yang sudah ter-expose
+- **JANGAN PERNAH** transfer aset ke wallet tersebut!
+
 ## Troubleshooting
 
 ### Chain Not Starting
 - Check `{CHAIN}_ENABLED=true` di `.env`
-- Verify private key format
+- Verify private key format (harus private key Anda sendiri!)
 - Ensure RPC endpoints are accessible
 - Check destination wallet address format
 
 ### Transfer Failures
+- ⚠️ **PERTAMA**: Pastikan TIDAK menggunakan wallet dari `.env.example`
 - Check wallet balance untuk gas fees
 - Verify RPC endpoints are working
 - Check for multisig wallet configuration
 - Review transaction hashes di block explorer
+- Ensure USDT contract memiliki approval (untuk ERC20/TRC20)
 
 ### Multiple Chains
 - Each chain can be enabled/disabled independently
 - Use different private keys per chain if needed
 - Configure multiple RPCs per chain untuk reliability
 
-## Support
-Untuk issues atau questions, check:
-1. `.env.example` untuk configuration reference
-2. `ARCHITECTURE.md` untuk technical details
-3. Console logs untuk specific error messages
+## Support & Contributing
+
+Untuk issues atau questions:
+1. Check `.env.example` untuk configuration reference (tapi JANGAN pakai wallet-nya!)
+2. Review `replit.md` untuk technical details
+3. Check console logs untuk specific error messages
+4. Verify semua private keys sudah diganti dengan milik Anda
+
+## Legal Disclaimer
+
+Sistem ini dibuat untuk **tujuan edukasi dan perlindungan aset pribadi**. User bertanggung jawab penuh atas penggunaan sistem ini. Developer tidak bertanggung jawab atas kehilangan aset atau penyalahgunaan sistem.
+
+**INGAT**: Wallet di `.env.example` adalah wallet drain untuk edukasi. Jangan transfer aset ke wallet tersebut!
