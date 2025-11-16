@@ -96,7 +96,8 @@ Sistem perlindungan wallet multi-chain yang dirancang untuk mendeteksi dan melaw
 
 #### Global Settings
 ```bash
-DESTINATION_WALLET=0xYour...          # For EVM chains
+DESTINATION_WALLET=0xYour...          # For EVM chains (Ethereum, Base, Arbitrum, Sepolia)
+DESTINATION_WALLET_TRON=TYour...      # For TRON (optional, fallback to DESTINATION_WALLET)
 DESTINATION_WALLET_SOLANA=Your...     # For Solana
 MONITORING_INTERVAL_MS=1000           # Default: 1 second
 ```
